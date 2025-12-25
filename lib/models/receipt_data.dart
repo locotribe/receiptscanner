@@ -1,4 +1,5 @@
 import 'package:intl/intl.dart';
+import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 
 class ReceiptData {
   String id;
@@ -6,7 +7,6 @@ class ReceiptData {
   DateTime? date;
   int? amount;
 
-  // ▼ 追加: 対象額(税抜)
   int? targetAmount10;
   int? targetAmount8;
 
@@ -16,6 +16,9 @@ class ReceiptData {
   String? tel;
   String rawText;
   String? imagePath;
+
+  // PDF生成用にOCRの生データを一時保持する (DBには保存しない)
+  RecognizedText? ocrData;
 
   ReceiptData({
     this.id = '',
@@ -30,6 +33,7 @@ class ReceiptData {
     this.tel,
     this.rawText = '',
     this.imagePath,
+    this.ocrData,
   });
 
   String get dateString {
@@ -47,15 +51,14 @@ class ReceiptData {
     return NumberFormat("#,###").format(amount);
   }
 
-  // オブジェクト -> Map (保存時)
   Map<String, dynamic> toMap() {
     return {
       'id': id,
       'store_name': storeName,
       'date_time': date?.toIso8601String(),
       'amount': amount,
-      'target_10': targetAmount10, // 追加
-      'target_8': targetAmount8,   // 追加
+      'target_10': targetAmount10,
+      'target_8': targetAmount8,
       'tax_10': taxAmount10,
       'tax_8': taxAmount8,
       'invoice_num': invoiceNumber,
@@ -65,15 +68,14 @@ class ReceiptData {
     };
   }
 
-  // Map -> オブジェクト (読み出し時)
   factory ReceiptData.fromMap(Map<String, dynamic> map) {
     return ReceiptData(
       id: map['id'] ?? '',
       storeName: map['store_name'] ?? '',
       date: map['date_time'] != null ? DateTime.parse(map['date_time']) : null,
       amount: map['amount'],
-      targetAmount10: map['target_10'], // 追加
-      targetAmount8: map['target_8'],   // 追加
+      targetAmount10: map['target_10'],
+      targetAmount8: map['target_8'],
       taxAmount10: map['tax_10'],
       taxAmount8: map['tax_8'],
       invoiceNumber: map['invoice_num'],

@@ -90,8 +90,7 @@ class DatabaseHelper {
     return result.map((json) => ReceiptData.fromMap(json)).toList();
   }
 
-  // 【修正】重複チェック (excludeIdを追加)
-  // excludeId: 編集中などの場合、自分自身のIDを除外してチェックする
+  // 重複チェック
   Future<bool> checkDuplicate(DateTime date, int amount, {String? excludeId}) async {
     final db = await instance.database;
     final dateStr = date.toIso8601String();
@@ -120,5 +119,37 @@ class DatabaseHelper {
       where: 'id = ?',
       whereArgs: [id],
     );
+  }
+
+  // 【追加】電話番号から、過去に登録された最新の「店名」を取得する
+  // ハイフンの有無による揺れを吸収するため、ハイフンを除去して比較する
+  Future<String?> getStoreNameByTel(String tel) async {
+    final db = await instance.database;
+
+    // 検索する電話番号からハイフン等の記号を除去 (数字のみにする)
+    final cleanTel = tel.replaceAll(RegExp(r'[^0-9]'), '');
+    if (cleanTel.length < 9) return null; // 短すぎる番号は信頼しない
+
+    // データベース内の全データを検索するのは重いため、直近のものを探す
+    // ※SQLiteの関数でreplaceができれば良いが、アプリ側でフィルタリングする方が確実
+
+    final result = await db.query(
+      'receipts',
+      columns: ['tel', 'store_name'],
+      orderBy: 'date_time DESC', // 新しい順
+    );
+
+    for (var row in result) {
+      final dbTel = (row['tel'] as String?) ?? '';
+      final dbStore = (row['store_name'] as String?) ?? '';
+
+      // DBの電話番号も数字のみにして比較
+      final cleanDbTel = dbTel.replaceAll(RegExp(r'[^0-9]'), '');
+
+      if (cleanDbTel == cleanTel && dbStore.isNotEmpty) {
+        return dbStore; // ヒットしたらその店名を返す
+      }
+    }
+    return null;
   }
 }
