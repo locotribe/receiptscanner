@@ -12,6 +12,9 @@ import '../logic/receipt_parser.dart';
 import '../database/database_helper.dart';
 import '../utils/date_picker_util.dart';
 import 'edit_receipt_screen.dart';
+// 新規追加: 認証サービスとドロワー
+import '../logic/auth_service.dart';
+import 'components/app_drawer.dart';
 
 class ScannerHomeScreen extends StatefulWidget {
   const ScannerHomeScreen({super.key});
@@ -53,6 +56,9 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> with TickerProvid
 
     _initScanner();
     _loadReceipts();
+
+    // アプリ起動時にログイン状態を確認・復元
+    AuthService.instance.signInSilently();
   }
 
   void _handleTabSelection() {
@@ -315,6 +321,7 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> with TickerProvid
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
     return Scaffold(
+      drawer: const AppDrawer(), // 追加: ドロワーを設定
       appBar: AppBar(
         backgroundColor: colorScheme.inversePrimary,
         title: Column(
