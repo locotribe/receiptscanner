@@ -1,6 +1,6 @@
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
-import 'package:receiptscanner/models/receipt_data.dart';
+import '../models/receipt_data.dart'; // パスを修正(import済みの場合はそのままでOK)
 
 class DatabaseHelper {
   static final DatabaseHelper instance = DatabaseHelper._init();
@@ -20,8 +20,9 @@ class DatabaseHelper {
 
     return await openDatabase(
       path,
-      version: 1,
+      version: 2, // 【変更】バージョンを1から2へ
       onCreate: _createDB,
+      onUpgrade: _upgradeDB, // 【追加】アップグレード時の処理
     );
   }
 
@@ -39,9 +40,19 @@ class DatabaseHelper {
         invoice_num TEXT,
         tel TEXT,
         raw_text TEXT,
-        image_path TEXT
+        image_path TEXT,
+        is_uploaded INTEGER DEFAULT 0,
+        drive_file_id TEXT
       )
     ''');
+  }
+
+  // 【追加】既存アプリからのアップデート時にカラムを追加する処理
+  Future<void> _upgradeDB(Database db, int oldVersion, int newVersion) async {
+    if (oldVersion < 2) {
+      await db.execute('ALTER TABLE receipts ADD COLUMN is_uploaded INTEGER DEFAULT 0');
+      await db.execute('ALTER TABLE receipts ADD COLUMN drive_file_id TEXT');
+    }
   }
 
   Future<void> insertReceipt(ReceiptData receipt) async {
@@ -50,6 +61,20 @@ class DatabaseHelper {
       'receipts',
       receipt.toMap(),
       conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  // 【追加】アップロード完了時にステータスとファイルIDを更新するメソッド
+  Future<void> updateUploadStatus(String id, String driveFileId) async {
+    final db = await instance.database;
+    await db.update(
+      'receipts',
+      {
+        'is_uploaded': 1,
+        'drive_file_id': driveFileId,
+      },
+      where: 'id = ?',
+      whereArgs: [id],
     );
   }
 
@@ -90,7 +115,6 @@ class DatabaseHelper {
     return result.map((json) => ReceiptData.fromMap(json)).toList();
   }
 
-  // 重複チェック
   Future<bool> checkDuplicate(DateTime date, int amount, {String? excludeId}) async {
     final db = await instance.database;
     final dateStr = date.toIso8601String();
@@ -121,33 +145,24 @@ class DatabaseHelper {
     );
   }
 
-  // 【追加】電話番号から、過去に登録された最新の「店名」を取得する
-  // ハイフンの有無による揺れを吸収するため、ハイフンを除去して比較する
   Future<String?> getStoreNameByTel(String tel) async {
     final db = await instance.database;
-
-    // 検索する電話番号からハイフン等の記号を除去 (数字のみにする)
     final cleanTel = tel.replaceAll(RegExp(r'[^0-9]'), '');
-    if (cleanTel.length < 9) return null; // 短すぎる番号は信頼しない
-
-    // データベース内の全データを検索するのは重いため、直近のものを探す
-    // ※SQLiteの関数でreplaceができれば良いが、アプリ側でフィルタリングする方が確実
+    if (cleanTel.length < 9) return null;
 
     final result = await db.query(
       'receipts',
       columns: ['tel', 'store_name'],
-      orderBy: 'date_time DESC', // 新しい順
+      orderBy: 'date_time DESC',
     );
 
     for (var row in result) {
       final dbTel = (row['tel'] as String?) ?? '';
       final dbStore = (row['store_name'] as String?) ?? '';
-
-      // DBの電話番号も数字のみにして比較
       final cleanDbTel = dbTel.replaceAll(RegExp(r'[^0-9]'), '');
 
       if (cleanDbTel == cleanTel && dbStore.isNotEmpty) {
-        return dbStore; // ヒットしたらその店名を返す
+        return dbStore;
       }
     }
     return null;

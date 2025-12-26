@@ -12,9 +12,10 @@ import '../logic/receipt_parser.dart';
 import '../database/database_helper.dart';
 import '../utils/date_picker_util.dart';
 import 'edit_receipt_screen.dart';
-// 新規追加: 認証サービスとドロワー
 import '../logic/auth_service.dart';
 import 'components/app_drawer.dart';
+// 【追加】Googleドライブサービス
+import '../logic/google_drive_service.dart';
 
 class ScannerHomeScreen extends StatefulWidget {
   const ScannerHomeScreen({super.key});
@@ -317,11 +318,56 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> with TickerProvid
     } catch (e) { print('Scan error: $e'); }
   }
 
+  // 【追加】ドライブへのアップロード処理
+  Future<void> _uploadReceipt(ReceiptData item) async {
+    // ログインチェック
+    if (AuthService.instance.currentUser == null) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('左上のメニューからGoogleアカウントと連携してください')));
+      return;
+    }
+
+    // ファイル存在チェック
+    if (item.imagePath == null || !File(item.imagePath!).existsSync()) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('アップロードするファイルが見つかりません')));
+      return;
+    }
+
+    // ローディング表示
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Googleドライブへアップロード中...')));
+
+    final file = File(item.imagePath!);
+    final fileName = item.imagePath!.split('/').last; // パスからファイル名を抽出
+
+    // アップロード実行
+    final fileId = await GoogleDriveService.instance.uploadFile(file, fileName);
+
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).hideCurrentSnackBar();
+
+    if (fileId != null) {
+      // 成功時: DB更新
+      await DatabaseHelper.instance.updateUploadStatus(item.id, fileId);
+
+      // UI更新: リストの該当アイテムのステータスを変更
+      setState(() {
+        final index = _allReceipts.indexWhere((r) => r.id == item.id);
+        if (index != -1) {
+          _allReceipts[index].isUploaded = 1;
+          _allReceipts[index].driveFileId = fileId;
+        }
+      });
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('アップロード完了')));
+    } else {
+      // 失敗時
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('アップロードに失敗しました')));
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
     return Scaffold(
-      drawer: const AppDrawer(), // 追加: ドロワーを設定
+      drawer: const AppDrawer(), // ドロワーを設定
       appBar: AppBar(
         backgroundColor: colorScheme.inversePrimary,
         title: Column(
@@ -463,13 +509,45 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> with TickerProvid
       itemCount: monthlyItems.length,
       itemBuilder: (context, index) {
         final item = monthlyItems[index];
+
+        // 【追加】ステータスアイコンの決定
+        Widget statusIcon;
+        if (item.isUploaded == 1) {
+          statusIcon = const Icon(Icons.check_circle, color: Colors.green, size: 20); // 保存済み
+        } else {
+          statusIcon = const Icon(Icons.cloud_upload, color: Colors.grey, size: 20); // 未保存
+        }
+
         return Slidable(
           key: Key(item.id),
+          // 【追加】右スワイプ (startActionPane) でアーカイブ/アップロード
+          startActionPane: ActionPane(
+            motion: const ScrollMotion(),
+            extentRatio: 0.25,
+            children: [
+              SlidableAction(
+                onPressed: (context) => _uploadReceipt(item),
+                backgroundColor: Colors.blue,
+                foregroundColor: Colors.white,
+                icon: Icons.cloud_upload,
+                label: '保存',
+                borderRadius: const BorderRadius.only(topRight: Radius.circular(4), bottomRight: Radius.circular(4)),
+              ),
+            ],
+          ),
+          // 左スワイプ (endActionPane) で削除（既存機能）
           endActionPane: ActionPane(
             motion: const ScrollMotion(),
             extentRatio: 0.25,
             children: [
-              SlidableAction(onPressed: (context) => _confirmDelete(context, item.id), backgroundColor: Colors.red, foregroundColor: Colors.white, icon: Icons.delete, label: '削除', borderRadius: const BorderRadius.only(topLeft: Radius.circular(4), bottomLeft: Radius.circular(4))),
+              SlidableAction(
+                onPressed: (context) => _confirmDelete(context, item.id),
+                backgroundColor: Colors.red,
+                foregroundColor: Colors.white,
+                icon: Icons.delete,
+                label: '削除',
+                borderRadius: const BorderRadius.only(topLeft: Radius.circular(4), bottomLeft: Radius.circular(4)),
+              ),
             ],
           ),
           child: Card(
@@ -481,7 +559,15 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> with TickerProvid
                   : const Icon(Icons.receipt),
               title: Text(item.storeName.isNotEmpty ? item.storeName : '店名なし', style: const TextStyle(fontWeight: FontWeight.bold)),
               subtitle: Text(_buildSubtitle(item), style: const TextStyle(fontSize: 12, height: 1.4)),
-              trailing: Text('¥${item.amountFormatted}', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.blue)),
+              // 【変更】金額の横にステータスアイコンを追加
+              trailing: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text('¥${item.amountFormatted}', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.blue)),
+                  const SizedBox(width: 8),
+                  statusIcon,
+                ],
+              ),
               onTap: () {
                 Navigator.push(context, MaterialPageRoute(builder: (context) => EditReceiptScreen(initialData: item, isEditing: true))).then((result) {
                   if (result == true) _loadReceipts();

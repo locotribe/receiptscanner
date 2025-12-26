@@ -20,7 +20,10 @@ class AuthService {
     ],
   );
 
-  // 【変更点】自前で管理するストリームコントローラーを作成
+  // 【追加】外部ライブラリ（Drive API）からインスタンスを利用できるようにするgetter
+  GoogleSignIn get googleSignIn => _googleSignIn;
+
+  // 自前で管理するストリームコントローラーを作成
   final StreamController<GoogleSignInAccount?> _userController = StreamController<GoogleSignInAccount?>.broadcast();
 
   // 外部にはこの自前のストリームを公開

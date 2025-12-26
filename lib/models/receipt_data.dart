@@ -17,6 +17,12 @@ class ReceiptData {
   String rawText;
   String? imagePath;
 
+  // 【追加】アップロード状態管理用
+  // 0: 未アップロード/変更あり, 1: アップロード済み
+  int isUploaded;
+  // Googleドライブ上のファイルID (上書きや重複チェック用)
+  String? driveFileId;
+
   // PDF生成用にOCRの生データを一時保持する (DBには保存しない)
   RecognizedText? ocrData;
 
@@ -33,6 +39,8 @@ class ReceiptData {
     this.tel,
     this.rawText = '',
     this.imagePath,
+    this.isUploaded = 0, // デフォルトは「未」
+    this.driveFileId,
     this.ocrData,
   });
 
@@ -65,6 +73,9 @@ class ReceiptData {
       'tel': tel,
       'raw_text': rawText,
       'image_path': imagePath,
+      // 【追加】DB保存用
+      'is_uploaded': isUploaded,
+      'drive_file_id': driveFileId,
     };
   }
 
@@ -82,6 +93,9 @@ class ReceiptData {
       tel: map['tel'],
       rawText: map['raw_text'] ?? '',
       imagePath: map['image_path'],
+      // 【追加】読み出し用 (nullの場合は0扱い)
+      isUploaded: map['is_uploaded'] ?? 0,
+      driveFileId: map['drive_file_id'],
     );
   }
 }
