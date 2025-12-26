@@ -117,4 +117,33 @@ class GoogleDriveService {
       // 既に削除されている場合などはエラーになるが、進行には影響させない
     }
   }
+
+  // 【追加】ファイルをダウンロードする
+  // [fileId]: ドライブ上のファイルID
+  // [savePath]: 保存先のローカルパス
+  Future<File?> downloadFile(String fileId, String savePath) async {
+    final api = await _getDriveApi();
+    if (api == null) return null;
+
+    try {
+      final drive.Media file = await api.files.get(
+        fileId,
+        downloadOptions: drive.DownloadOptions.fullMedia,
+      ) as drive.Media;
+
+      final saveFile = File(savePath);
+      final List<int> dataStore = [];
+
+      await for (final data in file.stream) {
+        dataStore.addAll(data);
+      }
+
+      await saveFile.writeAsBytes(dataStore);
+      print("Download Success: $savePath");
+      return saveFile;
+    } catch (e) {
+      print("Download Error: $e");
+      return null;
+    }
+  }
 }

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import '../../logic/auth_service.dart';
+import '../help_screen.dart'; // 【追加】作成したヘルプ画面をインポート
 
 class AppDrawer extends StatelessWidget {
   const AppDrawer({super.key});
@@ -10,22 +11,15 @@ class AppDrawer extends StatelessWidget {
     return Drawer(
       child: StreamBuilder<GoogleSignInAccount?>(
         stream: AuthService.instance.userStream,
-        // 【重要】ここを追加：現在の状態を初期値として渡す
         initialData: AuthService.instance.currentUser,
         builder: (context, snapshot) {
           final user = snapshot.data;
           final isSignedIn = user != null;
 
-          // デバッグ用ログ
-          if (isSignedIn) {
-            print('AppDrawer: ログイン済み - ${user.displayName}');
-          } else {
-            print('AppDrawer: 未ログイン');
-          }
-
           return ListView(
             padding: EdgeInsets.zero,
             children: [
+              // ユーザー情報ヘッダー
               UserAccountsDrawerHeader(
                 decoration: BoxDecoration(
                   color: Theme.of(context).colorScheme.primary,
@@ -59,6 +53,8 @@ class AppDrawer extends StatelessWidget {
                   child: Icon(Icons.person, color: Colors.grey),
                 ),
               ),
+
+              // ログイン / ログアウト ボタン
               if (!isSignedIn)
                 ListTile(
                   leading: const Icon(Icons.cloud_upload),
@@ -77,6 +73,22 @@ class AppDrawer extends StatelessWidget {
                     await AuthService.instance.signOut();
                   },
                 ),
+
+              const Divider(), // 区切り線
+
+              // 【追加】操作説明へのリンク
+              ListTile(
+                leading: const Icon(Icons.help_outline),
+                title: const Text('操作説明 / アイコンの意味'),
+                onTap: () {
+                  Navigator.pop(context); // ドロワーを閉じる
+                  // ヘルプ画面へ遷移
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (context) => const HelpScreen()),
+                  );
+                },
+              ),
             ],
           );
         },

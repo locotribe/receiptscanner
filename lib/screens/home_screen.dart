@@ -42,7 +42,7 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> with TickerProvid
   int? _filterMinAmount;
   int? _filterMaxAmount;
 
-  // 【追加】複数選択モード用の状態管理
+  // 複数選択モード用の状態管理
   bool _isSelectionMode = false;
   final Set<String> _selectedItemIds = {};
 
@@ -61,6 +61,7 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> with TickerProvid
     _initScanner();
     _loadReceipts();
 
+    // アプリ起動時にログイン状態を確認
     AuthService.instance.signInSilently();
   }
 
@@ -327,15 +328,19 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> with TickerProvid
     } catch (e) { print('Scan error: $e'); }
   }
 
-  // --- アップロード処理 (単体) ---
+  // --- 単体アップロード処理 ---
   Future<void> _uploadReceipt(ReceiptData item) async {
     if (AuthService.instance.currentUser == null) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('左上のメニューからGoogleアカウントと連携してください')));
       return;
     }
 
+    // ファイルがあるかチェック（ダウンロード済みかどうか）
     if (item.imagePath == null || !File(item.imagePath!).existsSync()) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('アップロードするファイルが見つかりません')));
+      // ファイルがない場合は「ダウンロードしますか？」と聞く
+      // または単に「ファイルがありません」と出す。
+      // ここでは個別アップロードボタンを押した文脈なので、ファイルがないとアップロードできない旨を伝える
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('アップロードするファイルが端末にありません。')));
       return;
     }
 
@@ -352,10 +357,7 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> with TickerProvid
           title: const Text('上書きの確認'),
           content: const Text('このレシートは既に保存されています。\n古いファイルを削除して上書きしますか？'),
           actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx, false),
-              child: const Text('キャンセル'),
-            ),
+            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('キャンセル')),
             ElevatedButton(
               onPressed: () => Navigator.pop(ctx, true),
               style: ElevatedButton.styleFrom(backgroundColor: Colors.blue, foregroundColor: Colors.white),
@@ -369,13 +371,13 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> with TickerProvid
 
     ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Googleドライブへアップロード中...')));
 
+    // 古いファイルを削除
     if (item.isUploaded == 1 && item.driveFileId != null) {
       await GoogleDriveService.instance.deleteFile(item.driveFileId!);
     }
 
     final file = File(item.imagePath!);
     final fileName = _generateFileName(item);
-
     final fileId = await GoogleDriveService.instance.uploadFile(file, fileName, item.date!);
 
     if (!mounted) return;
@@ -397,7 +399,7 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> with TickerProvid
     }
   }
 
-  // --- 【追加】一括アップロード処理 ---
+  // --- 一括アップロード処理 ---
   Future<void> _uploadSelectedReceipts() async {
     if (AuthService.instance.currentUser == null) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('左上のメニューからGoogleアカウントと連携してください')));
@@ -406,35 +408,23 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> with TickerProvid
 
     if (_selectedItemIds.isEmpty) return;
 
-    // 対象データの取得
     final selectedItems = _allReceipts.where((r) => _selectedItemIds.contains(r.id)).toList();
 
     // アップロード済みのファイルが含まれているかチェック
     final hasUploadedItems = selectedItems.any((item) => item.isUploaded == 1 && item.driveFileId != null);
 
-    bool skipUploaded = false; // 既済をスキップするかどうか
+    bool skipUploaded = false;
 
     if (hasUploadedItems) {
-      // 選択肢: キャンセル / 未保存のみ / 全て上書き
       final result = await showDialog<String>(
         context: context,
         builder: (ctx) => AlertDialog(
           title: const Text('重複ファイルの確認'),
           content: const Text('選択したレシートの中に、既に保存済みのファイルが含まれています。\nどうしますか？'),
           actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx, 'cancel'),
-              child: const Text('キャンセル'),
-            ),
-            TextButton(
-              onPressed: () => Navigator.pop(ctx, 'skip'),
-              child: const Text('未保存のみ実行'),
-            ),
-            ElevatedButton(
-              onPressed: () => Navigator.pop(ctx, 'overwrite'),
-              style: ElevatedButton.styleFrom(backgroundColor: Colors.blue, foregroundColor: Colors.white),
-              child: const Text('すべて上書き'),
-            ),
+            TextButton(onPressed: () => Navigator.pop(ctx, 'cancel'), child: const Text('キャンセル')),
+            TextButton(onPressed: () => Navigator.pop(ctx, 'skip'), child: const Text('未保存のみ実行')),
+            ElevatedButton(onPressed: () => Navigator.pop(ctx, 'overwrite'), style: ElevatedButton.styleFrom(backgroundColor: Colors.blue, foregroundColor: Colors.white), child: const Text('すべて上書き')),
           ],
         ),
       );
@@ -443,28 +433,17 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> with TickerProvid
       if (result == 'skip') skipUploaded = true;
     }
 
-    // 進捗ダイアログの表示
+    // 進捗ダイアログ
     if (!mounted) return;
     showDialog(
       context: context,
       barrierDismissible: false,
       builder: (context) {
-        return StatefulBuilder(
-            builder: (context, setState) {
-              return const PopScope(
-                canPop: false,
-                child: AlertDialog(
-                  content: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      CircularProgressIndicator(),
-                      SizedBox(height: 16),
-                      Text('アップロード中...'),
-                    ],
-                  ),
-                ),
-              );
-            }
+        return const PopScope(
+          canPop: false,
+          child: AlertDialog(
+            content: Column(mainAxisSize: MainAxisSize.min, children: [CircularProgressIndicator(), SizedBox(height: 16), Text('アップロード中...')]),
+          ),
         );
       },
     );
@@ -477,11 +456,10 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> with TickerProvid
 
       try {
         if (item.imagePath == null || !File(item.imagePath!).existsSync() || item.date == null) {
-          errorCount++;
+          errorCount++; // ファイルがない場合は失敗カウント
           continue;
         }
 
-        // 上書きの場合は古いファイルを削除
         if (item.isUploaded == 1 && item.driveFileId != null) {
           await GoogleDriveService.instance.deleteFile(item.driveFileId!);
         }
@@ -493,8 +471,7 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> with TickerProvid
         if (fileId != null) {
           await DatabaseHelper.instance.updateUploadStatus(item.id, fileId);
           successCount++;
-          // UI用のリストも更新（ループ中にsetStateは避けるため、後でまとめて更新でもよいが、
-          // 処理が長い場合はここで内部データを更新しておくと良い）
+          // 内部データを更新
           final index = _allReceipts.indexWhere((r) => r.id == item.id);
           if (index != -1) {
             _allReceipts[index].isUploaded = 1;
@@ -509,39 +486,75 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> with TickerProvid
       }
     }
 
-    // ダイアログを閉じる
     if (!mounted) return;
-    Navigator.pop(context);
+    Navigator.pop(context); // 閉じる
 
-    // モード解除
     setState(() {
       _isSelectionMode = false;
       _selectedItemIds.clear();
     });
 
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('完了: 成功 $successCount件 / 失敗 $errorCount件')),
-    );
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('完了: 成功 $successCount件 / 失敗 $errorCount件')));
   }
 
-  // 【追加】一括削除処理
+  // --- スマート一括削除 ---
   Future<void> _deleteSelectedReceipts() async {
+    final selectedItems = _allReceipts.where((r) => _selectedItemIds.contains(r.id)).toList();
+
+    final uploadedItems = selectedItems.where((r) => r.isUploaded == 1).toList();
+    final notUploadedItems = selectedItems.where((r) => r.isUploaded == 0).toList();
+
+    String message = '';
+    bool isDangerous = false;
+
+    if (notUploadedItems.isNotEmpty) {
+      message = '選択した項目のうち ${notUploadedItems.length}件 はまだバックアップされていません。\nこれらは完全に削除されます。\n\n';
+      isDangerous = true;
+    }
+
+    if (uploadedItems.isNotEmpty) {
+      message += 'バックアップ済みの ${uploadedItems.length}件 は、端末から画像のみを削除して容量を空けます。（リストには残ります）';
+    } else if (notUploadedItems.isEmpty) {
+      return;
+    }
+
     final bool? confirm = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('一括削除'),
-        content: Text('選択した${_selectedItemIds.length}件のレシートを削除してもよろしいですか？\nこの操作は取り消せません。'),
+        title: Text(isDangerous ? '完全削除の確認' : '容量の確保'),
+        content: Text(message),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('キャンセル')),
-          TextButton(onPressed: () => Navigator.pop(ctx, true), style: TextButton.styleFrom(foregroundColor: Colors.red), child: const Text('削除する')),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: TextButton.styleFrom(foregroundColor: isDangerous ? Colors.red : Colors.blue),
+            child: Text(isDangerous ? '削除する' : '実行'),
+          ),
         ],
       ),
     );
 
     if (confirm != true) return;
 
-    for (var id in _selectedItemIds) {
-      await DatabaseHelper.instance.deleteReceipt(id);
+    for (var item in selectedItems) {
+      if (item.isUploaded == 1) {
+        // アップロード済み -> ファイルだけ消す (DBは消さない)
+        if (item.imagePath != null) {
+          final file = File(item.imagePath!);
+          if (file.existsSync()) {
+            await file.delete();
+          }
+        }
+      } else {
+        // 未アップロード -> 完全削除 (DBも消す)
+        if (item.imagePath != null) {
+          final file = File(item.imagePath!);
+          if (file.existsSync()) {
+            await file.delete();
+          }
+        }
+        await DatabaseHelper.instance.deleteReceipt(item.id);
+      }
     }
 
     await _loadReceipts();
@@ -551,7 +564,52 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> with TickerProvid
     });
 
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('削除しました')));
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('処理が完了しました')));
+  }
+
+  // --- スマート個別削除 ---
+  Future<void> _confirmDelete(BuildContext context, ReceiptData item) async {
+    String message;
+    bool isDangerous;
+
+    if (item.isUploaded == 1) {
+      message = 'このレシートはバックアップ済みです。\n端末から画像を削除して容量を空けますか？\n（リストには残ります）';
+      isDangerous = false;
+    } else {
+      message = 'このレシートはバックアップされていません。\n完全に削除してもよろしいですか？';
+      isDangerous = true;
+    }
+
+    final bool? shouldDelete = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('削除の確認'),
+        content: Text(message),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('キャンセル')),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: TextButton.styleFrom(foregroundColor: isDangerous ? Colors.red : Colors.blue),
+            child: Text(isDangerous ? '削除する' : '実行'),
+          ),
+        ],
+      ),
+    );
+
+    if (shouldDelete == true) {
+      if (item.isUploaded == 1) {
+        // ファイルのみ削除
+        if (item.imagePath != null) {
+          final file = File(item.imagePath!);
+          if (file.existsSync()) await file.delete();
+        }
+        _loadReceipts(); // アイコン更新のためリロード
+      } else {
+        // 完全削除
+        await DatabaseHelper.instance.deleteReceipt(item.id);
+        _loadReceipts();
+      }
+    }
   }
 
   // ファイル名生成ヘルパー
@@ -597,11 +655,9 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> with TickerProvid
 
     setState(() {
       if (_selectedItemIds.length == currentMonthItems.length) {
-        // すでに全選択なら解除
         _selectedItemIds.clear();
         _isSelectionMode = false;
       } else {
-        // 全選択
         _selectedItemIds.addAll(currentMonthItems.map((e) => e.id));
       }
     });
@@ -615,8 +671,7 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> with TickerProvid
       drawer: const AppDrawer(),
       appBar: AppBar(
         backgroundColor: _isSelectionMode ? Colors.grey[800] : colorScheme.inversePrimary,
-        foregroundColor: _isSelectionMode ? Colors.white : Colors.black, // 選択モード時は文字を白に
-        // 【修正】選択モード時はタイトルを変更
+        foregroundColor: _isSelectionMode ? Colors.white : Colors.black,
         title: _isSelectionMode
             ? Text('${_selectedItemIds.length}件 選択中')
             : Column(
@@ -632,7 +687,6 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> with TickerProvid
               ),
           ],
         ),
-        // 【修正】選択モード時は戻るボタンを「×」にする
         leading: _isSelectionMode
             ? IconButton(
           icon: const Icon(Icons.close),
@@ -643,10 +697,9 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> with TickerProvid
             });
           },
         )
-            : null, // デフォルトのハンバーガーメニュー等
+            : null,
         actions: _isSelectionMode
             ? [
-          // 選択モード時のアクション
           IconButton(
             icon: const Icon(Icons.select_all),
             onPressed: _selectAllItems,
@@ -664,7 +717,6 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> with TickerProvid
           ),
         ]
             : [
-          // 通常時のアクション
           IconButton(
             icon: Icon(Icons.search, color: (_filterStartDate != null || _filterMinAmount != null) ? Colors.red : null),
             onPressed: _showSearchModal,
@@ -749,23 +801,6 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> with TickerProvid
     );
   }
 
-  Future<void> _confirmDelete(BuildContext context, String id) async {
-    final bool? shouldDelete = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('削除の確認'),
-        content: const Text('このレシートを削除してもよろしいですか？\nこの操作は取り消せません。'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('キャンセル')),
-          TextButton(onPressed: () => Navigator.pop(ctx, true), style: TextButton.styleFrom(foregroundColor: Colors.red), child: const Text('削除する', style: TextStyle(fontWeight: FontWeight.bold))),
-        ],
-      ),
-    );
-    if (shouldDelete == true) {
-      _deleteReceipt(id);
-    }
-  }
-
   Widget _buildReceiptListForMonth(DateTime date) {
     final monthlyItems = _allReceipts.where((r) {
       if (r.date == null) return false;
@@ -792,7 +827,13 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> with TickerProvid
         final item = monthlyItems[index];
         final isSelected = _selectedItemIds.contains(item.id);
 
-        // 【修正】選択モード時はチェックボックス、通常時はステータスアイコン
+        // ファイル有無チェック
+        bool fileExists = false;
+        if (item.imagePath != null) {
+          fileExists = File(item.imagePath!).existsSync();
+        }
+
+        // アイコン決定ロジック
         Widget leadingIcon;
         if (_isSelectionMode) {
           leadingIcon = Icon(
@@ -802,7 +843,11 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> with TickerProvid
           );
         } else {
           if (item.isUploaded == 1) {
-            leadingIcon = const Icon(Icons.check_circle, color: Colors.green, size: 30);
+            if (fileExists) {
+              leadingIcon = const Icon(Icons.check_circle, color: Colors.green, size: 30);
+            } else {
+              leadingIcon = const Icon(Icons.cloud_download, color: Colors.blue, size: 30);
+            }
           } else {
             leadingIcon = const Icon(Icons.cloud_upload, color: Colors.grey, size: 30);
           }
@@ -810,7 +855,6 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> with TickerProvid
 
         return Slidable(
           key: Key(item.id),
-          // 選択モード中はスワイプ操作を無効化する
           enabled: !_isSelectionMode,
           startActionPane: ActionPane(
             motion: const ScrollMotion(),
@@ -831,7 +875,7 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> with TickerProvid
             extentRatio: 0.25,
             children: [
               SlidableAction(
-                onPressed: (context) => _confirmDelete(context, item.id),
+                onPressed: (context) => _confirmDelete(context, item),
                 backgroundColor: Colors.red,
                 foregroundColor: Colors.white,
                 icon: Icons.delete,
@@ -843,7 +887,6 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> with TickerProvid
           child: Card(
             margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
             elevation: 2,
-            // 選択されている場合は背景色を少し変える
             color: isSelected ? Colors.blue.withOpacity(0.1) : null,
             child: ListTile(
               leading: leadingIcon,
@@ -851,17 +894,57 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> with TickerProvid
               subtitle: Text(_buildSubtitle(item), style: const TextStyle(fontSize: 12, height: 1.4)),
               trailing: Text('¥${item.amountFormatted}', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.blue)),
 
-              // 【修正】タップ時の挙動
-              onTap: () {
+              onTap: () async {
                 if (_isSelectionMode) {
                   _toggleItemSelection(item.id);
-                } else {
+                  return;
+                }
+
+                // ファイルがある場合 -> 編集画面へ
+                if (fileExists) {
                   Navigator.push(context, MaterialPageRoute(builder: (context) => EditReceiptScreen(initialData: item, isEditing: true))).then((result) {
                     if (result == true) _loadReceipts();
                   });
+                  return;
+                }
+
+                // ファイルがない場合 -> ダウンロード確認
+                if (item.isUploaded == 1 && item.driveFileId != null) {
+                  final bool? download = await showDialog<bool>(
+                    context: context,
+                    builder: (ctx) => AlertDialog(
+                      title: const Text('画像のダウンロード'),
+                      content: const Text('このレシート画像は端末から削除されています。\n編集するためにダウンロードしますか？'),
+                      actions: [
+                        TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('キャンセル')),
+                        ElevatedButton(
+                          onPressed: () => Navigator.pop(ctx, true),
+                          child: const Text('ダウンロード'),
+                        ),
+                      ],
+                    ),
+                  );
+
+                  if (download == true) {
+                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('ダウンロード中...')));
+                    final downloadedFile = await GoogleDriveService.instance.downloadFile(item.driveFileId!, item.imagePath!);
+
+                    if (!context.mounted) return;
+                    ScaffoldMessenger.of(context).hideCurrentSnackBar();
+
+                    if (downloadedFile != null) {
+                      _loadReceipts();
+                      Navigator.push(context, MaterialPageRoute(builder: (context) => EditReceiptScreen(initialData: item, isEditing: true))).then((result) {
+                        if (result == true) _loadReceipts();
+                      });
+                    } else {
+                      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('ダウンロードに失敗しました')));
+                    }
+                  }
+                } else {
+                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('画像ファイルが見つかりません')));
                 }
               },
-              // 【追加】長押しで選択モード開始
               onLongPress: () {
                 if (!_isSelectionMode) {
                   _toggleSelectionMode(item.id);
@@ -895,8 +978,6 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> with TickerProvid
   Future<void> _deleteReceipt(String id) async {
     await DatabaseHelper.instance.deleteReceipt(id);
     _loadReceipts();
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('削除しました')));
   }
 
   @override
