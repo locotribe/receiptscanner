@@ -14,7 +14,6 @@ import '../utils/date_picker_util.dart';
 import 'edit_receipt_screen.dart';
 import '../logic/auth_service.dart';
 import 'components/app_drawer.dart';
-// 【追加】Googleドライブサービス
 import '../logic/google_drive_service.dart';
 
 class ScannerHomeScreen extends StatefulWidget {
@@ -43,6 +42,10 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> with TickerProvid
   int? _filterMinAmount;
   int? _filterMaxAmount;
 
+  // 【追加】複数選択モード用の状態管理
+  bool _isSelectionMode = false;
+  final Set<String> _selectedItemIds = {};
+
   @override
   void initState() {
     super.initState();
@@ -58,7 +61,6 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> with TickerProvid
     _initScanner();
     _loadReceipts();
 
-    // アプリ起動時にログイン状態を確認・復元
     AuthService.instance.signInSilently();
   }
 
@@ -67,6 +69,9 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> with TickerProvid
     setState(() {
       final selectedMonth = _months[_tabController.index];
       _currentDisplayDate = DateTime(_currentDisplayDate.year, selectedMonth);
+      // 月が変わったら選択モードを解除
+      _isSelectionMode = false;
+      _selectedItemIds.clear();
     });
   }
 
@@ -106,9 +111,12 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> with TickerProvid
   void _onYearChanged(int year) {
     setState(() {
       _currentDisplayDate = DateTime(year, _currentDisplayDate.month);
+      _isSelectionMode = false;
+      _selectedItemIds.clear();
     });
   }
 
+  // --- 検索モーダル関連 ---
   String? _getFilterLabel() {
     List<String> parts = [];
     if (_filterStartDate != null || _filterEndDate != null) {
@@ -209,6 +217,7 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> with TickerProvid
     );
   }
 
+  // --- OCR / スキャン処理 ---
   Future<void> _performOcr(String imagePath) async {
     setState(() => _isProcessing = true);
     try {
@@ -318,37 +327,63 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> with TickerProvid
     } catch (e) { print('Scan error: $e'); }
   }
 
-  // 【追加】ドライブへのアップロード処理
+  // --- アップロード処理 (単体) ---
   Future<void> _uploadReceipt(ReceiptData item) async {
-    // ログインチェック
     if (AuthService.instance.currentUser == null) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('左上のメニューからGoogleアカウントと連携してください')));
       return;
     }
 
-    // ファイル存在チェック
     if (item.imagePath == null || !File(item.imagePath!).existsSync()) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('アップロードするファイルが見つかりません')));
       return;
     }
 
-    // ローディング表示
+    if (item.date == null) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('日付が設定されていないため保存できません')));
+      return;
+    }
+
+    // 上書き確認
+    if (item.isUploaded == 1 && item.driveFileId != null) {
+      final bool? shouldOverwrite = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('上書きの確認'),
+          content: const Text('このレシートは既に保存されています。\n古いファイルを削除して上書きしますか？'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('キャンセル'),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.blue, foregroundColor: Colors.white),
+              child: const Text('上書きする'),
+            ),
+          ],
+        ),
+      );
+      if (shouldOverwrite != true) return;
+    }
+
     ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Googleドライブへアップロード中...')));
 
-    final file = File(item.imagePath!);
-    final fileName = item.imagePath!.split('/').last; // パスからファイル名を抽出
+    if (item.isUploaded == 1 && item.driveFileId != null) {
+      await GoogleDriveService.instance.deleteFile(item.driveFileId!);
+    }
 
-    // アップロード実行
-    final fileId = await GoogleDriveService.instance.uploadFile(file, fileName);
+    final file = File(item.imagePath!);
+    final fileName = _generateFileName(item);
+
+    final fileId = await GoogleDriveService.instance.uploadFile(file, fileName, item.date!);
 
     if (!mounted) return;
     ScaffoldMessenger.of(context).hideCurrentSnackBar();
 
     if (fileId != null) {
-      // 成功時: DB更新
       await DatabaseHelper.instance.updateUploadStatus(item.id, fileId);
 
-      // UI更新: リストの該当アイテムのステータスを変更
       setState(() {
         final index = _allReceipts.indexWhere((r) => r.id == item.id);
         if (index != -1) {
@@ -356,21 +391,235 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> with TickerProvid
           _allReceipts[index].driveFileId = fileId;
         }
       });
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('アップロード完了')));
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('「$fileName」を保存しました')));
     } else {
-      // 失敗時
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('アップロードに失敗しました')));
     }
+  }
+
+  // --- 【追加】一括アップロード処理 ---
+  Future<void> _uploadSelectedReceipts() async {
+    if (AuthService.instance.currentUser == null) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('左上のメニューからGoogleアカウントと連携してください')));
+      return;
+    }
+
+    if (_selectedItemIds.isEmpty) return;
+
+    // 対象データの取得
+    final selectedItems = _allReceipts.where((r) => _selectedItemIds.contains(r.id)).toList();
+
+    // アップロード済みのファイルが含まれているかチェック
+    final hasUploadedItems = selectedItems.any((item) => item.isUploaded == 1 && item.driveFileId != null);
+
+    bool skipUploaded = false; // 既済をスキップするかどうか
+
+    if (hasUploadedItems) {
+      // 選択肢: キャンセル / 未保存のみ / 全て上書き
+      final result = await showDialog<String>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('重複ファイルの確認'),
+          content: const Text('選択したレシートの中に、既に保存済みのファイルが含まれています。\nどうしますか？'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, 'cancel'),
+              child: const Text('キャンセル'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, 'skip'),
+              child: const Text('未保存のみ実行'),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.pop(ctx, 'overwrite'),
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.blue, foregroundColor: Colors.white),
+              child: const Text('すべて上書き'),
+            ),
+          ],
+        ),
+      );
+
+      if (result == 'cancel' || result == null) return;
+      if (result == 'skip') skipUploaded = true;
+    }
+
+    // 進捗ダイアログの表示
+    if (!mounted) return;
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) {
+        return StatefulBuilder(
+            builder: (context, setState) {
+              return const PopScope(
+                canPop: false,
+                child: AlertDialog(
+                  content: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      CircularProgressIndicator(),
+                      SizedBox(height: 16),
+                      Text('アップロード中...'),
+                    ],
+                  ),
+                ),
+              );
+            }
+        );
+      },
+    );
+
+    int successCount = 0;
+    int errorCount = 0;
+
+    for (var item in selectedItems) {
+      if (skipUploaded && item.isUploaded == 1) continue;
+
+      try {
+        if (item.imagePath == null || !File(item.imagePath!).existsSync() || item.date == null) {
+          errorCount++;
+          continue;
+        }
+
+        // 上書きの場合は古いファイルを削除
+        if (item.isUploaded == 1 && item.driveFileId != null) {
+          await GoogleDriveService.instance.deleteFile(item.driveFileId!);
+        }
+
+        final file = File(item.imagePath!);
+        final fileName = _generateFileName(item);
+        final fileId = await GoogleDriveService.instance.uploadFile(file, fileName, item.date!);
+
+        if (fileId != null) {
+          await DatabaseHelper.instance.updateUploadStatus(item.id, fileId);
+          successCount++;
+          // UI用のリストも更新（ループ中にsetStateは避けるため、後でまとめて更新でもよいが、
+          // 処理が長い場合はここで内部データを更新しておくと良い）
+          final index = _allReceipts.indexWhere((r) => r.id == item.id);
+          if (index != -1) {
+            _allReceipts[index].isUploaded = 1;
+            _allReceipts[index].driveFileId = fileId;
+          }
+        } else {
+          errorCount++;
+        }
+      } catch (e) {
+        errorCount++;
+        print("Upload Loop Error: $e");
+      }
+    }
+
+    // ダイアログを閉じる
+    if (!mounted) return;
+    Navigator.pop(context);
+
+    // モード解除
+    setState(() {
+      _isSelectionMode = false;
+      _selectedItemIds.clear();
+    });
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('完了: 成功 $successCount件 / 失敗 $errorCount件')),
+    );
+  }
+
+  // 【追加】一括削除処理
+  Future<void> _deleteSelectedReceipts() async {
+    final bool? confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('一括削除'),
+        content: Text('選択した${_selectedItemIds.length}件のレシートを削除してもよろしいですか？\nこの操作は取り消せません。'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('キャンセル')),
+          TextButton(onPressed: () => Navigator.pop(ctx, true), style: TextButton.styleFrom(foregroundColor: Colors.red), child: const Text('削除する')),
+        ],
+      ),
+    );
+
+    if (confirm != true) return;
+
+    for (var id in _selectedItemIds) {
+      await DatabaseHelper.instance.deleteReceipt(id);
+    }
+
+    await _loadReceipts();
+    setState(() {
+      _isSelectionMode = false;
+      _selectedItemIds.clear();
+    });
+
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('削除しました')));
+  }
+
+  // ファイル名生成ヘルパー
+  String _generateFileName(ReceiptData item) {
+    // フォーマット: 2025_1201_1230_店舗名_1000.jpg
+    final datePart = DateFormat('yyyy_MMdd').format(item.date!);
+    final timePart = DateFormat('HHmm').format(item.date!);
+
+    String safeStoreName = item.storeName.isNotEmpty ? item.storeName : 'NoName';
+    safeStoreName = safeStoreName.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
+
+    final extension = item.imagePath!.split('.').last;
+    return "${datePart}_${timePart}_${safeStoreName}_${item.amount ?? 0}.$extension";
+  }
+
+  // --- 選択モード制御 ---
+  void _toggleSelectionMode(String id) {
+    setState(() {
+      _isSelectionMode = true;
+      _selectedItemIds.add(id);
+    });
+  }
+
+  void _toggleItemSelection(String id) {
+    setState(() {
+      if (_selectedItemIds.contains(id)) {
+        _selectedItemIds.remove(id);
+        if (_selectedItemIds.isEmpty) {
+          _isSelectionMode = false;
+        }
+      } else {
+        _selectedItemIds.add(id);
+      }
+    });
+  }
+
+  void _selectAllItems() {
+    final currentMonthItems = _allReceipts.where((r) {
+      return r.date != null &&
+          r.date!.year == _currentDisplayDate.year &&
+          r.date!.month == _currentDisplayDate.month;
+    }).toList();
+
+    setState(() {
+      if (_selectedItemIds.length == currentMonthItems.length) {
+        // すでに全選択なら解除
+        _selectedItemIds.clear();
+        _isSelectionMode = false;
+      } else {
+        // 全選択
+        _selectedItemIds.addAll(currentMonthItems.map((e) => e.id));
+      }
+    });
   }
 
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
+
     return Scaffold(
-      drawer: const AppDrawer(), // ドロワーを設定
+      drawer: const AppDrawer(),
       appBar: AppBar(
-        backgroundColor: colorScheme.inversePrimary,
-        title: Column(
+        backgroundColor: _isSelectionMode ? Colors.grey[800] : colorScheme.inversePrimary,
+        foregroundColor: _isSelectionMode ? Colors.white : Colors.black, // 選択モード時は文字を白に
+        // 【修正】選択モード時はタイトルを変更
+        title: _isSelectionMode
+            ? Text('${_selectedItemIds.length}件 選択中')
+            : Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             const Text('レシート帳'),
@@ -383,7 +632,39 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> with TickerProvid
               ),
           ],
         ),
-        actions: [
+        // 【修正】選択モード時は戻るボタンを「×」にする
+        leading: _isSelectionMode
+            ? IconButton(
+          icon: const Icon(Icons.close),
+          onPressed: () {
+            setState(() {
+              _isSelectionMode = false;
+              _selectedItemIds.clear();
+            });
+          },
+        )
+            : null, // デフォルトのハンバーガーメニュー等
+        actions: _isSelectionMode
+            ? [
+          // 選択モード時のアクション
+          IconButton(
+            icon: const Icon(Icons.select_all),
+            onPressed: _selectAllItems,
+            tooltip: '全選択/解除',
+          ),
+          IconButton(
+            icon: const Icon(Icons.cloud_upload),
+            onPressed: _uploadSelectedReceipts,
+            tooltip: '選択した項目を保存',
+          ),
+          IconButton(
+            icon: const Icon(Icons.delete),
+            onPressed: _deleteSelectedReceipts,
+            tooltip: '選択した項目を削除',
+          ),
+        ]
+            : [
+          // 通常時のアクション
           IconButton(
             icon: Icon(Icons.search, color: (_filterStartDate != null || _filterMinAmount != null) ? Colors.red : null),
             onPressed: _showSearchModal,
@@ -509,18 +790,28 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> with TickerProvid
       itemCount: monthlyItems.length,
       itemBuilder: (context, index) {
         final item = monthlyItems[index];
+        final isSelected = _selectedItemIds.contains(item.id);
 
-        // 【追加】ステータスアイコンの決定
-        Widget statusIcon;
-        if (item.isUploaded == 1) {
-          statusIcon = const Icon(Icons.check_circle, color: Colors.green, size: 20); // 保存済み
+        // 【修正】選択モード時はチェックボックス、通常時はステータスアイコン
+        Widget leadingIcon;
+        if (_isSelectionMode) {
+          leadingIcon = Icon(
+            isSelected ? Icons.check_box : Icons.check_box_outline_blank,
+            color: isSelected ? Colors.blue : Colors.grey,
+            size: 30,
+          );
         } else {
-          statusIcon = const Icon(Icons.cloud_upload, color: Colors.grey, size: 20); // 未保存
+          if (item.isUploaded == 1) {
+            leadingIcon = const Icon(Icons.check_circle, color: Colors.green, size: 30);
+          } else {
+            leadingIcon = const Icon(Icons.cloud_upload, color: Colors.grey, size: 30);
+          }
         }
 
         return Slidable(
           key: Key(item.id),
-          // 【追加】右スワイプ (startActionPane) でアーカイブ/アップロード
+          // 選択モード中はスワイプ操作を無効化する
+          enabled: !_isSelectionMode,
           startActionPane: ActionPane(
             motion: const ScrollMotion(),
             extentRatio: 0.25,
@@ -535,7 +826,6 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> with TickerProvid
               ),
             ],
           ),
-          // 左スワイプ (endActionPane) で削除（既存機能）
           endActionPane: ActionPane(
             motion: const ScrollMotion(),
             extentRatio: 0.25,
@@ -553,25 +843,29 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> with TickerProvid
           child: Card(
             margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
             elevation: 2,
+            // 選択されている場合は背景色を少し変える
+            color: isSelected ? Colors.blue.withOpacity(0.1) : null,
             child: ListTile(
-              leading: item.imagePath != null
-                  ? ClipRRect(borderRadius: BorderRadius.circular(4), child: Image.file(File(item.imagePath!), width: 50, height: 50, fit: BoxFit.cover, errorBuilder: (c, o, s) => const Icon(Icons.receipt)))
-                  : const Icon(Icons.receipt),
+              leading: leadingIcon,
               title: Text(item.storeName.isNotEmpty ? item.storeName : '店名なし', style: const TextStyle(fontWeight: FontWeight.bold)),
               subtitle: Text(_buildSubtitle(item), style: const TextStyle(fontSize: 12, height: 1.4)),
-              // 【変更】金額の横にステータスアイコンを追加
-              trailing: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text('¥${item.amountFormatted}', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.blue)),
-                  const SizedBox(width: 8),
-                  statusIcon,
-                ],
-              ),
+              trailing: Text('¥${item.amountFormatted}', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.blue)),
+
+              // 【修正】タップ時の挙動
               onTap: () {
-                Navigator.push(context, MaterialPageRoute(builder: (context) => EditReceiptScreen(initialData: item, isEditing: true))).then((result) {
-                  if (result == true) _loadReceipts();
-                });
+                if (_isSelectionMode) {
+                  _toggleItemSelection(item.id);
+                } else {
+                  Navigator.push(context, MaterialPageRoute(builder: (context) => EditReceiptScreen(initialData: item, isEditing: true))).then((result) {
+                    if (result == true) _loadReceipts();
+                  });
+                }
+              },
+              // 【追加】長押しで選択モード開始
+              onLongPress: () {
+                if (!_isSelectionMode) {
+                  _toggleSelectionMode(item.id);
+                }
               },
             ),
           ),

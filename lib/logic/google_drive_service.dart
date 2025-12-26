@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'package:extension_google_sign_in_as_googleapis_auth/extension_google_sign_in_as_googleapis_auth.dart';
 import 'package:googleapis/drive/v3.dart' as drive;
+import 'package:intl/intl.dart'; // 日付フォーマット用に必要
 import 'auth_service.dart';
 
 class GoogleDriveService {
@@ -10,85 +11,110 @@ class GoogleDriveService {
 
   GoogleDriveService._internal();
 
-  // 保存先フォルダ名
-  static const String _folderName = "ReceiptScanner";
+  static const String _rootFolderName = "ReceiptScanner";
 
-  /// 認証済みのDrive APIクライアントを取得する
   Future<drive.DriveApi?> _getDriveApi() async {
     final googleSignIn = AuthService.instance.googleSignIn;
-    // ログインしていない場合はnull
     if (googleSignIn.currentUser == null) return null;
 
-    // 認証済みHTTPクライアントを生成 (extension_google_sign_in_as_googleapis_auth の機能)
     final client = await googleSignIn.authenticatedClient();
     if (client == null) return null;
 
     return drive.DriveApi(client);
   }
 
-  /// 保存先フォルダのIDを取得する（なければ作成する）
-  Future<String?> _getOrCreateFolderId(drive.DriveApi api) async {
+  /// 指定した親フォルダの中に、指定した名前のフォルダを取得（なければ作成）する
+  /// [parentId] が null の場合はルート直下を探します
+  Future<String?> _getOrCreateFolder(drive.DriveApi api, String folderName, String? parentId) async {
     try {
-      // 1. フォルダが存在するか検索
+      // 検索クエリの構築
+      String query = "mimeType = 'application/vnd.google-apps.folder' and name = '$folderName' and trashed = false";
+      if (parentId != null) {
+        query += " and '$parentId' in parents";
+      }
+
       final found = await api.files.list(
-        q: "mimeType = 'application/vnd.google-apps.folder' and name = '$_folderName' and trashed = false",
+        q: query,
         $fields: "files(id, name)",
       );
 
-      // 2. 見つかればそのIDを返す
       if (found.files != null && found.files!.isNotEmpty) {
         return found.files!.first.id;
       }
 
-      // 3. なければ新規作成
+      // 新規作成
       final folderToCreate = drive.File()
-        ..name = _folderName
+        ..name = folderName
         ..mimeType = 'application/vnd.google-apps.folder';
+
+      if (parentId != null) {
+        folderToCreate.parents = [parentId];
+      }
 
       final createdFolder = await api.files.create(folderToCreate);
       return createdFolder.id;
     } catch (e) {
-      print("Folder Error: $e");
+      print("Folder Error ($folderName): $e");
       return null;
     }
   }
 
-  /// ファイルをアップロードする
-  /// [file]: アップロードするローカルファイル
-  /// [fileName]: ドライブ上でのファイル名
-  /// 戻り値: アップロードされたファイルのID (失敗時はnull)
-  Future<String?> uploadFile(File file, String fileName) async {
+  /// ファイルをアップロードする (年/月フォルダ対応版)
+  Future<String?> uploadFile(File file, String fileName, DateTime date) async {
     final api = await _getDriveApi();
-    if (api == null) {
-      print("Drive API Client is null (Not signed in?)");
-      return null;
-    }
+    if (api == null) return null;
 
-    final folderId = await _getOrCreateFolderId(api);
-    if (folderId == null) {
-      print("Failed to get target folder ID");
-      return null;
-    }
+    // 1. ルートフォルダ (ReceiptScanner)
+    final rootId = await _getOrCreateFolder(api, _rootFolderName, null);
+    if (rootId == null) return null;
 
-    // アップロードするファイルのメタデータ
+    // 2. 年フォルダ (例: 2025)
+    final yearStr = DateFormat('yyyy').format(date);
+    final yearId = await _getOrCreateFolder(api, yearStr, rootId);
+    if (yearId == null) return null;
+
+    // 3. 月フォルダ (例: 01)
+    final monthStr = DateFormat('MM').format(date);
+    final monthId = await _getOrCreateFolder(api, monthStr, yearId);
+    if (monthId == null) return null;
+
+    // 4. ファイルのアップロード
     final fileToUpload = drive.File()
       ..name = fileName
-      ..parents = [folderId]; // 専用フォルダの中に保存
+      ..parents = [monthId]; // 月フォルダの中に保存
 
-    // ファイルの中身
     final media = drive.Media(file.openRead(), file.lengthSync());
 
     try {
       final result = await api.files.create(
         fileToUpload,
         uploadMedia: media,
-        $fields: 'id', // 結果としてIDだけ返してくれればOK
+        $fields: 'id',
       );
-      print("Upload Success: ID=${result.id}");
+      print("Upload Success: ID=${result.id} in $yearStr/$monthStr");
       return result.id;
     } catch (e) {
       print("Upload Error: $e");
       return null;
+    }
+  }
+// 【追加】指定したIDのファイルをゴミ箱に移動する（削除）
+  Future<void> deleteFile(String fileId) async {
+    final api = await _getDriveApi();
+    if (api == null) return;
+
+    try {
+      // deleteメソッドを呼ぶと完全に削除されますが、
+      // 安全のため trash (ゴミ箱) フラグを立てる形にするupdateを使うのが一般的です。
+      // ですが、Drive API v3では update で trashed=true にします。
+
+      final file = drive.File()..trashed = true;
+      await api.files.update(file, fileId);
+
+      print("File trashed: ID=$fileId");
+    } catch (e) {
+      print("Delete Error: $e");
+      // 既に削除されている場合などはエラーになるが、進行には影響させない
     }
   }
 }
