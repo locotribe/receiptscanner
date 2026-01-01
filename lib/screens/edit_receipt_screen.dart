@@ -5,7 +5,6 @@ import 'package:intl/intl.dart';
 import 'package:printing/printing.dart';
 import 'package:path_provider/path_provider.dart';
 
-// 別ファイルからインポート
 import '../models/receipt_data.dart';
 import '../logic/pdf_generator.dart';
 import '../database/database_helper.dart';
@@ -21,11 +20,11 @@ class EditReceiptScreen extends StatefulWidget {
 
 class _EditReceiptScreenState extends State<EditReceiptScreen> {
   final _formKey = GlobalKey<FormState>();
-  late TextEditingController _storeController, _amountController, _target10Controller, _tax10Controller, _target8Controller, _tax8Controller, _telController, _dateController, _timeController, _invoiceController;
+  // 【修正】_descriptionControllerを追加
+  late TextEditingController _storeController, _amountController, _target10Controller, _tax10Controller, _target8Controller, _tax8Controller, _telController, _dateController, _timeController, _invoiceController, _descriptionController;
   final _pdfGenerator = PdfGenerator();
   Uint8List? _pdfImageBytes;
 
-  // 拡大縮小・移動を制御するコントローラー
   final _transformationController = TransformationController();
 
   @override
@@ -42,6 +41,8 @@ class _EditReceiptScreenState extends State<EditReceiptScreen> {
     _dateController = TextEditingController(text: d.dateString);
     _timeController = TextEditingController(text: d.timeString);
     _invoiceController = TextEditingController(text: d.invoiceNumber);
+    // 【追加】
+    _descriptionController = TextEditingController(text: d.description);
 
     _amountController.addListener(_onAmountChanged);
     _target10Controller.addListener(_onTarget10Changed);
@@ -57,7 +58,6 @@ class _EditReceiptScreenState extends State<EditReceiptScreen> {
         final file = File(path);
         if (await file.exists()) {
           final bytes = await file.readAsBytes();
-          // デフォルト解像度でレンダリング
           await for (final page in Printing.raster(bytes, pages: [0])) {
             final image = await page.toPng();
             if (mounted) {
@@ -128,6 +128,8 @@ class _EditReceiptScreenState extends State<EditReceiptScreen> {
     _storeController.dispose(); _amountController.dispose(); _target10Controller.dispose(); _tax10Controller.dispose();
     _target8Controller.dispose(); _tax8Controller.dispose(); _telController.dispose(); _dateController.dispose();
     _timeController.dispose(); _invoiceController.dispose();
+    // 【追加】
+    _descriptionController.dispose();
     _transformationController.dispose();
     super.dispose();
   }
@@ -160,6 +162,8 @@ class _EditReceiptScreenState extends State<EditReceiptScreen> {
       final time = _timeController.text;
       final invoice = _invoiceController.text;
       final tel = _telController.text;
+      // 【追加】
+      final description = _descriptionController.text;
 
       String telRaw = tel.replaceAll(RegExp(r'[^0-9]'), '');
       String formattedTel = telRaw;
@@ -242,6 +246,8 @@ class _EditReceiptScreenState extends State<EditReceiptScreen> {
         targetAmount10: target10, targetAmount8: target8, taxAmount10: tax10, taxAmount8: tax8,
         invoiceNumber: invoice, tel: formattedTel, rawText: widget.initialData.rawText,
         imagePath: finalImagePath,
+        // 【追加】
+        description: description,
       );
       await DatabaseHelper.instance.insertReceipt(saveData);
       if (!mounted) return;
@@ -331,15 +337,18 @@ class _EditReceiptScreenState extends State<EditReceiptScreen> {
                             ),
                           ),
                         ),
-                        TextFormField(controller: _storeController, decoration: const InputDecoration(labelText: '店名', prefixIcon: Icon(Icons.store))),
+                        TextFormField(controller: _storeController, decoration: const InputDecoration(labelText: '店名')),
+                        const SizedBox(height: 12),
+                        // 【追加】摘要（科目）入力欄
+                        TextFormField(controller: _descriptionController, decoration: const InputDecoration(labelText: '摘要 (科目：消耗品、食材など)')),
                         const SizedBox(height: 12),
                         Row(children: [
-                          Expanded(flex: 3, child: TextFormField(controller: _dateController, decoration: const InputDecoration(labelText: '日付', prefixIcon: Icon(Icons.calendar_today)), readOnly: true, onTap: _pickDate)),
+                          Expanded(flex: 3, child: TextFormField(controller: _dateController, decoration: const InputDecoration(labelText: '日付'), readOnly: true, onTap: _pickDate)),
                           const SizedBox(width: 8),
-                          Expanded(flex: 2, child: TextFormField(controller: _timeController, decoration: const InputDecoration(labelText: '時間', prefixIcon: Icon(Icons.access_time)), readOnly: true, onTap: _pickTime)),
+                          Expanded(flex: 2, child: TextFormField(controller: _timeController, decoration: const InputDecoration(labelText: '時間'), readOnly: true, onTap: _pickTime)),
                         ]),
                         const SizedBox(height: 12),
-                        TextFormField(controller: _amountController, decoration: const InputDecoration(labelText: '合計金額 (税込)', prefixIcon: Icon(Icons.currency_yen)), keyboardType: TextInputType.number),
+                        TextFormField(controller: _amountController, decoration: const InputDecoration(labelText: '合計金額 (税込)'), keyboardType: TextInputType.number),
                         const SizedBox(height: 8),
                         Row(children: [
                           const Text('10%', style: TextStyle(fontWeight: FontWeight.bold)), const SizedBox(width: 16),
@@ -355,11 +364,11 @@ class _EditReceiptScreenState extends State<EditReceiptScreen> {
                           Expanded(child: TextFormField(controller: _tax8Controller, decoration: const InputDecoration(labelText: '税額'), keyboardType: TextInputType.number)),
                         ]),
                         const SizedBox(height: 12),
-                        TextFormField(controller: _invoiceController, decoration: const InputDecoration(labelText: 'インボイス登録番号', prefixIcon: Icon(Icons.verified))),
+                        TextFormField(controller: _invoiceController, decoration: const InputDecoration(labelText: 'インボイス登録番号')),
                         const SizedBox(height: 12),
                         TextFormField(
                             controller: _telController,
-                            decoration: const InputDecoration(labelText: '電話番号', prefixIcon: Icon(Icons.phone), hintText: '0245440901 (ハイフンなしでもOK)'),
+                            decoration: const InputDecoration(labelText: '電話番号', hintText: '0245440901 (ハイフンなしでもOK)'),
                             keyboardType: TextInputType.phone
                         ),
                         const SizedBox(height: 32),

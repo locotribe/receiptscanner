@@ -13,7 +13,7 @@ class HelpScreen extends StatelessWidget {
       body: ListView(
         padding: const EdgeInsets.all(16.0),
         children: [
-          // --- 【追加】トップバーのアイコン説明 ---
+          // --- トップバーのアイコン説明 ---
           _buildSectionTitle('画面右上のアイコン (通常時)'),
           _buildIconExplanation(
             icon: Icons.search,
@@ -36,19 +36,26 @@ class HelpScreen extends StatelessWidget {
             icon: Icons.cloud_upload,
             color: Colors.grey,
             title: '未バックアップ',
-            description: '端末にのみデータがあります。\n削除すると完全に消えてしまいます。',
+            description: 'この端末で登録し、まだクラウドに保存していません。\nデータも画像もこの端末にしかありません。',
           ),
           _buildIconExplanation(
             icon: Icons.check_circle,
             color: Colors.green,
             title: 'バックアップ済み (端末にあり)',
-            description: 'Googleドライブに保存済みです。\n削除ボタンを押すと、端末の容量を空けるために画像のみ削除できます（リストには残ります）。',
+            description: 'クラウドへの保存が完了しており、この端末にも画像がある状態です。\n安全に管理されています。',
           ),
           _buildIconExplanation(
             icon: Icons.cloud_download,
             color: Colors.blue,
             title: 'バックアップ済み (端末になし)',
-            description: '画像は端末から削除され、クラウドにのみ存在します。\nタップすると画像をダウンロードして編集できます。',
+            description: '画像はクラウドにあり、端末からは削除して容量を節約している状態です。\nタップすると再ダウンロードできます。',
+          ),
+          // 【追加】他端末ローカル状態の説明
+          _buildIconExplanation(
+            icon: Icons.warning,
+            color: Colors.orange,
+            title: '画像未アップロード',
+            description: '他の端末でデータ登録されましたが、まだ画像がクラウドにアップロードされていません。\n金額などの確認はできますが、画像のダウンロードはできません。',
           ),
 
           const Divider(height: 40),
@@ -97,8 +104,9 @@ class HelpScreen extends StatelessWidget {
 
           // --- 便利な機能 ---
           _buildSectionTitle('便利な機能'),
+          _buildTextItem('自動同期', 'レシートを保存したタイミングや、アプリ起動時に自動的にクラウド上の台帳と同期します。'),
           _buildTextItem('容量の節約', 'バックアップ済みのレシートを削除すると、リスト（文字データ）だけ残して画像ファイルが消去され、スマホの容量を節約できます。'),
-          _buildTextItem('画像の復元', '青いアイコン（端末になし）のレシートをタップすると、いつでもGoogleドライブから画像を再ダウンロードできます。'),
+
           const SizedBox(height: 20),
         ],
       ),

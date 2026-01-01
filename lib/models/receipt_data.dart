@@ -17,7 +17,9 @@ class ReceiptData {
   String rawText;
   String? imagePath;
 
-  // 【追加】アップロード状態管理用
+  // 摘要（科目）
+  String? description;
+
   // 0: 未アップロード/変更あり, 1: アップロード済み
   int isUploaded;
   // Googleドライブ上のファイルID (上書きや重複チェック用)
@@ -39,6 +41,7 @@ class ReceiptData {
     this.tel,
     this.rawText = '',
     this.imagePath,
+    this.description,
     this.isUploaded = 0, // デフォルトは「未」
     this.driveFileId,
     this.ocrData,
@@ -59,6 +62,7 @@ class ReceiptData {
     return NumberFormat("#,###").format(amount);
   }
 
+  // DB保存用
   Map<String, dynamic> toMap() {
     return {
       'id': id,
@@ -73,12 +77,13 @@ class ReceiptData {
       'tel': tel,
       'raw_text': rawText,
       'image_path': imagePath,
-      // 【追加】DB保存用
+      'description': description,
       'is_uploaded': isUploaded,
       'drive_file_id': driveFileId,
     };
   }
 
+  // DB読み込み用
   factory ReceiptData.fromMap(Map<String, dynamic> map) {
     return ReceiptData(
       id: map['id'] ?? '',
@@ -93,9 +98,55 @@ class ReceiptData {
       tel: map['tel'],
       rawText: map['raw_text'] ?? '',
       imagePath: map['image_path'],
-      // 【追加】読み出し用 (nullの場合は0扱い)
+      description: map['description'],
       isUploaded: map['is_uploaded'] ?? 0,
       driveFileId: map['drive_file_id'],
+    );
+  }
+
+  // --- 【ここがエラー原因でした】Googleドライブ同期用メソッド ---
+
+  // JSON変換 (同期用)
+  Map<String, dynamic> toJson() {
+    return {
+      'id': id,
+      'storeName': storeName,
+      'date': date?.toIso8601String(),
+      'amount': amount,
+      'targetAmount10': targetAmount10,
+      'targetAmount8': targetAmount8,
+      'taxAmount10': taxAmount10,
+      'taxAmount8': taxAmount8,
+      'invoiceNumber': invoiceNumber,
+      'tel': tel,
+      'memo': description, // descriptionをmemoとして同期するか、descriptionとして同期するか
+      // ここでは既存仕様の 'memo' フィールドに合わせて同期させますが、
+      // 本来なら 'description' キーを使うべきです。
+      // もし他端末ですでに 'memo' として扱っているならそのままで、
+      // 今回新規追加なら 'description' キーを追加します。
+      'description': description,
+      'driveFileId': driveFileId,
+      // imagePath, ocrData は同期しない
+    };
+  }
+
+  // JSON復元 (同期用)
+  factory ReceiptData.fromJson(Map<String, dynamic> json) {
+    return ReceiptData(
+      id: json['id'],
+      date: json['date'] != null ? DateTime.tryParse(json['date']) : null,
+      storeName: json['storeName'] ?? '',
+      amount: json['amount'],
+      targetAmount10: json['targetAmount10'],
+      targetAmount8: json['targetAmount8'],
+      taxAmount10: json['taxAmount10'],
+      taxAmount8: json['taxAmount8'],
+      invoiceNumber: json['invoiceNumber'],
+      tel: json['tel'],
+      description: json['description'] ?? json['memo'], // 互換性のためmemoも見る
+      imagePath: null,
+      isUploaded: (json['driveFileId'] != null) ? 1 : 0,
+      driveFileId: json['driveFileId'],
     );
   }
 }

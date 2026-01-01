@@ -1,6 +1,6 @@
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
-import '../models/receipt_data.dart'; // パスを修正(import済みの場合はそのままでOK)
+import '../models/receipt_data.dart';
 
 class DatabaseHelper {
   static final DatabaseHelper instance = DatabaseHelper._init();
@@ -20,9 +20,9 @@ class DatabaseHelper {
 
     return await openDatabase(
       path,
-      version: 2, // 【変更】バージョンを1から2へ
+      version: 3,
       onCreate: _createDB,
-      onUpgrade: _upgradeDB, // 【追加】アップグレード時の処理
+      onUpgrade: _upgradeDB,
     );
   }
 
@@ -41,17 +41,20 @@ class DatabaseHelper {
         tel TEXT,
         raw_text TEXT,
         image_path TEXT,
+        description TEXT,
         is_uploaded INTEGER DEFAULT 0,
         drive_file_id TEXT
       )
     ''');
   }
 
-  // 【追加】既存アプリからのアップデート時にカラムを追加する処理
   Future<void> _upgradeDB(Database db, int oldVersion, int newVersion) async {
     if (oldVersion < 2) {
       await db.execute('ALTER TABLE receipts ADD COLUMN is_uploaded INTEGER DEFAULT 0');
       await db.execute('ALTER TABLE receipts ADD COLUMN drive_file_id TEXT');
+    }
+    if (oldVersion < 3) {
+      await db.execute('ALTER TABLE receipts ADD COLUMN description TEXT');
     }
   }
 
@@ -64,7 +67,16 @@ class DatabaseHelper {
     );
   }
 
-  // 【追加】アップロード完了時にステータスとファイルIDを更新するメソッド
+  Future<int> updateReceipt(ReceiptData receipt) async {
+    final db = await instance.database;
+    return await db.update(
+      'receipts',
+      receipt.toMap(),
+      where: 'id = ?',
+      whereArgs: [receipt.id],
+    );
+  }
+
   Future<void> updateUploadStatus(String id, String driveFileId) async {
     final db = await instance.database;
     await db.update(
@@ -166,5 +178,38 @@ class DatabaseHelper {
       }
     }
     return null;
+  }
+
+  // --- 【ここがエラー原因でした】同期用マージメソッド ---
+  Future<void> mergeReceipts(List<ReceiptData> cloudReceipts) async {
+    final db = await instance.database;
+    final batch = db.batch();
+
+    for (var receipt in cloudReceipts) {
+      // 既存データをチェック
+      final List<Map<String, dynamic>> existing = await db.query(
+        'receipts',
+        where: 'id = ?',
+        whereArgs: [receipt.id],
+      );
+
+      if (existing.isEmpty) {
+        // 新規挿入
+        batch.insert('receipts', receipt.toMap());
+      } else {
+        // 既存データ更新（ローカルの画像パスを維持）
+        final currentLocalPath = existing.first['image_path'] as String?;
+        var newData = receipt.toMap();
+        newData['image_path'] = currentLocalPath;
+
+        batch.update(
+          'receipts',
+          newData,
+          where: 'id = ?',
+          whereArgs: [receipt.id],
+        );
+      }
+    }
+    await batch.commit(noResult: true);
   }
 }
