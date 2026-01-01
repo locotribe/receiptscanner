@@ -11,7 +11,7 @@ import 'package:intl/intl.dart';
 import '../models/receipt_data.dart';
 import '../logic/receipt_parser.dart';
 import '../logic/receipt_validator.dart';
-import '../logic/receipt_action_helper.dart'; // 追加
+import '../logic/receipt_action_helper.dart';
 import '../database/database_helper.dart';
 import '../widgets/search_filter_sheet.dart';
 import '../widgets/receipt_list_item.dart';
@@ -75,7 +75,7 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> with TickerProvid
     });
   }
 
-  // 【追加】起動時同期処理
+  // 起動時同期処理
   Future<void> _runFullSync() async {
     setState(() => _isSyncing = true);
     try {
@@ -123,7 +123,8 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> with TickerProvid
         years.add(r.date!.year);
       }
     }
-    List<int> sortedYears = years.toList()..sort((a, b) => b.compareTo(a));
+    // 【修正】昇順ソートに変更 (古い年が左側、新しい年が右側)
+    List<int> sortedYears = years.toList()..sort((a, b) => a.compareTo(b));
 
     setState(() {
       _allReceipts = receipts;
@@ -254,7 +255,7 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> with TickerProvid
       if (result == true) {
         await _loadReceipts();
 
-        // 【追加】保存直後にデータを同期 (Push)
+        // 保存直後にデータを同期 (Push)
         if (receiptData.id.isNotEmpty) {
           final savedData = _allReceipts.firstWhere((r) => r.id == receiptData.id, orElse: () => receiptData);
           // バックグラウンドで同期実行
@@ -319,8 +320,6 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> with TickerProvid
     });
   }
 
-  // _generateFileName は ReceiptActionHelper に移動したため削除
-
   // --- 選択モード制御 ---
   void _toggleSelectionMode(String id) {
     setState(() { _isSelectionMode = true; _selectedItemIds.add(id); });
@@ -359,7 +358,7 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> with TickerProvid
       ),
       body: Column(
         children: [
-          // 【追加】同期中のインジケータ
+          // 同期中のインジケータ
           if (_isSyncing) const LinearProgressIndicator(),
 
           YearSelector(
