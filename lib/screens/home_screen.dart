@@ -10,11 +10,12 @@ import 'package:intl/intl.dart';
 // 別ファイルからインポート
 import '../models/receipt_data.dart';
 import '../logic/receipt_parser.dart';
-import '../logic/receipt_validator.dart'; // 追加
+import '../logic/receipt_validator.dart';
+import '../logic/receipt_action_helper.dart'; // 追加
 import '../database/database_helper.dart';
-// import '../utils/date_picker_util.dart'; // 削除
 import '../widgets/search_filter_sheet.dart';
 import '../widgets/receipt_list_item.dart';
+import '../widgets/year_selector.dart';
 import 'edit_receipt_screen.dart';
 import '../logic/auth_service.dart';
 import 'components/app_drawer.dart';
@@ -280,264 +281,45 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> with TickerProvid
     } catch (e) { print('Scan error: $e'); }
   }
 
-  // --- 単体アップロード処理 ---
+  // --- 単体アップロード処理 (委譲) ---
   Future<void> _uploadReceipt(ReceiptData item) async {
-    if (AuthService.instance.currentUser == null) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('左上のメニューからGoogleアカウントと連携してください')));
-      return;
-    }
-
-    if (item.imagePath == null || !File(item.imagePath!).existsSync()) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('アップロードするファイルが端末にありません。')));
-      return;
-    }
-
-    if (item.date == null) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('日付が設定されていないため保存できません')));
-      return;
-    }
-
-    if (item.isUploaded == 1 && item.driveFileId != null) {
-      final bool? shouldOverwrite = await showDialog<bool>(
-        context: context,
-        builder: (ctx) => AlertDialog(
-          title: const Text('上書きの確認'),
-          content: const Text('このレシートは既に保存されています。\n古いファイルを削除して上書きしますか？'),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('キャンセル')),
-            ElevatedButton(onPressed: () => Navigator.pop(ctx, true), style: ElevatedButton.styleFrom(backgroundColor: Colors.blue, foregroundColor: Colors.white), child: const Text('上書きする')),
-          ],
-        ),
-      );
-      if (shouldOverwrite != true) return;
-    }
-
-    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Googleドライブへアップロード中...')));
-
-    if (item.isUploaded == 1 && item.driveFileId != null) {
-      await GoogleDriveService.instance.deleteFile(item.driveFileId!);
-    }
-
-    final file = File(item.imagePath!);
-    final fileName = _generateFileName(item);
-    final fileId = await GoogleDriveService.instance.uploadFile(file, fileName, item.date!);
-
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).hideCurrentSnackBar();
-
-    if (fileId != null) {
-      await DatabaseHelper.instance.updateUploadStatus(item.id, fileId);
-
-      // 【追加】画像UP完了時もマスターデータを同期更新
-      final updatedItem = item;
-      updatedItem.isUploaded = 1;
-      updatedItem.driveFileId = fileId;
-      await GoogleDriveService.instance.syncReceiptToCloud(updatedItem);
-
-      setState(() {
-        final index = _allReceipts.indexWhere((r) => r.id == item.id);
-        if (index != -1) {
-          _allReceipts[index].isUploaded = 1;
-          _allReceipts[index].driveFileId = fileId;
-        }
-      });
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('「$fileName」を保存しました')));
-    } else {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('アップロードに失敗しました')));
-    }
-  }
-
-  // --- 一括アップロード処理 ---
-  Future<void> _uploadSelectedReceipts() async {
-    // ... 省略なし ...
-    if (AuthService.instance.currentUser == null) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('左上のメニューからGoogleアカウントと連携してください')));
-      return;
-    }
-    if (_selectedItemIds.isEmpty) return;
-
-    final selectedItems = _allReceipts.where((r) => _selectedItemIds.contains(r.id)).toList();
-    final hasUploadedItems = selectedItems.any((item) => item.isUploaded == 1 && item.driveFileId != null);
-
-    bool skipUploaded = false;
-    if (hasUploadedItems) {
-      final result = await showDialog<String>(
-        context: context,
-        builder: (ctx) => AlertDialog(
-          title: const Text('重複ファイルの確認'),
-          content: const Text('選択したレシートの中に、既に保存済みのファイルが含まれています。\nどうしますか？'),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(ctx, 'cancel'), child: const Text('キャンセル')),
-            TextButton(onPressed: () => Navigator.pop(ctx, 'skip'), child: const Text('未保存のみ実行')),
-            ElevatedButton(onPressed: () => Navigator.pop(ctx, 'overwrite'), style: ElevatedButton.styleFrom(backgroundColor: Colors.blue, foregroundColor: Colors.white), child: const Text('すべて上書き')),
-          ],
-        ),
-      );
-      if (result == 'cancel' || result == null) return;
-      if (result == 'skip') skipUploaded = true;
-    }
-
-    if (!mounted) return;
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) => const PopScope(canPop: false, child: AlertDialog(content: Column(mainAxisSize: MainAxisSize.min, children: [CircularProgressIndicator(), SizedBox(height: 16), Text('アップロード中...')]))),
-    );
-
-    int successCount = 0;
-    int errorCount = 0;
-
-    for (var item in selectedItems) {
-      if (skipUploaded && item.isUploaded == 1) continue;
-      try {
-        if (item.imagePath == null || !File(item.imagePath!).existsSync() || item.date == null) {
-          errorCount++; continue;
-        }
-        if (item.isUploaded == 1 && item.driveFileId != null) {
-          await GoogleDriveService.instance.deleteFile(item.driveFileId!);
-        }
-
-        final file = File(item.imagePath!);
-        final fileName = _generateFileName(item);
-        final fileId = await GoogleDriveService.instance.uploadFile(file, fileName, item.date!);
-
-        if (fileId != null) {
-          await DatabaseHelper.instance.updateUploadStatus(item.id, fileId);
-
-          // 【追加】同期更新
-          final updatedItem = item;
-          updatedItem.isUploaded = 1;
-          updatedItem.driveFileId = fileId;
-          await GoogleDriveService.instance.syncReceiptToCloud(updatedItem);
-
-          successCount++;
-          final index = _allReceipts.indexWhere((r) => r.id == item.id);
-          if (index != -1) {
-            _allReceipts[index].isUploaded = 1;
-            _allReceipts[index].driveFileId = fileId;
-          }
-        } else {
-          errorCount++;
-        }
-      } catch (e) { errorCount++; }
-    }
-
-    if (!mounted) return;
-    Navigator.pop(context);
-    setState(() {
-      _isSelectionMode = false;
-      _selectedItemIds.clear();
-    });
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('完了: 成功 $successCount件 / 失敗 $errorCount件')));
-  }
-
-  // --- スマート削除処理 ---
-  Future<void> _deleteSelectedReceipts() async {
-    // ... 省略なし ...
-    final selectedItems = _allReceipts.where((r) => _selectedItemIds.contains(r.id)).toList();
-    final uploadedItems = selectedItems.where((r) => r.isUploaded == 1).toList();
-    final notUploadedItems = selectedItems.where((r) => r.isUploaded == 0).toList();
-
-    String message = '';
-    bool isDangerous = false;
-
-    if (notUploadedItems.isNotEmpty) {
-      message = '選択した項目のうち ${notUploadedItems.length}件 はまだバックアップされていません。\nこれらは完全に削除されます。\n\n';
-      isDangerous = true;
-    }
-    if (uploadedItems.isNotEmpty) {
-      message += 'バックアップ済みの ${uploadedItems.length}件 は、端末から画像のみを削除して容量を空けます。（リストには残ります）';
-    } else if (notUploadedItems.isEmpty) return;
-
-    final bool? confirm = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text(isDangerous ? '完全削除の確認' : '容量の確保'),
-        content: Text(message),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('キャンセル')),
-          TextButton(onPressed: () => Navigator.pop(ctx, true), style: TextButton.styleFrom(foregroundColor: isDangerous ? Colors.red : Colors.blue), child: Text(isDangerous ? '削除する' : '実行')),
-        ],
-      ),
-    );
-
-    if (confirm != true) return;
-
-    for (var item in selectedItems) {
-      if (item.isUploaded == 1) {
-        // ファイルのみ削除
-        if (item.imagePath != null) {
-          final file = File(item.imagePath!);
-          if (file.existsSync()) await file.delete();
-        }
-      } else {
-        // 完全削除
-        if (item.imagePath != null) {
-          final file = File(item.imagePath!);
-          if (file.existsSync()) await file.delete();
-        }
-        await DatabaseHelper.instance.deleteReceipt(item.id);
-        // 【追加】クラウドのマスターデータからも削除
-        await GoogleDriveService.instance.deleteReceiptFromCloud(item.id);
-      }
-    }
-
-    await _loadReceipts();
-    setState(() {
-      _isSelectionMode = false;
-      _selectedItemIds.clear();
-    });
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('処理が完了しました')));
-  }
-
-  Future<void> _confirmDelete(BuildContext context, ReceiptData item) async {
-    // ... 省略なし (一括削除と同様のロジック変更) ...
-    String message;
-    bool isDangerous;
-    if (item.isUploaded == 1) {
-      message = 'このレシートはバックアップ済みです。\n端末から画像を削除して容量を空けますか？\n（リストには残ります）';
-      isDangerous = false;
-    } else {
-      message = 'このレシートはバックアップされていません。\n完全に削除してもよろしいですか？';
-      isDangerous = true;
-    }
-
-    final bool? shouldDelete = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('削除の確認'),
-        content: Text(message),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('キャンセル')),
-          TextButton(onPressed: () => Navigator.pop(ctx, true), style: TextButton.styleFrom(foregroundColor: isDangerous ? Colors.red : Colors.blue), child: Text(isDangerous ? '削除する' : '実行')),
-        ],
-      ),
-    );
-
-    if (shouldDelete == true) {
-      if (item.isUploaded == 1) {
-        if (item.imagePath != null) {
-          final file = File(item.imagePath!);
-          if (file.existsSync()) await file.delete();
-        }
-      } else {
-        await DatabaseHelper.instance.deleteReceipt(item.id);
-        // 【追加】クラウド削除
-        await GoogleDriveService.instance.deleteReceiptFromCloud(item.id);
-      }
+    await ReceiptActionHelper.uploadReceipt(context, item, () {
       _loadReceipts();
-    }
+    });
   }
 
-  String _generateFileName(ReceiptData item) {
-    final datePart = DateFormat('yyyy_MMdd').format(item.date!);
-    final timePart = DateFormat('HHmm').format(item.date!);
-    String safeStoreName = item.storeName.isNotEmpty ? item.storeName : 'NoName';
-    safeStoreName = safeStoreName.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
-    final extension = item.imagePath!.split('.').last;
-    return "${datePart}_${timePart}_${safeStoreName}_${item.amount ?? 0}.$extension";
+  // --- 一括アップロード処理 (委譲) ---
+  Future<void> _uploadSelectedReceipts() async {
+    final selectedItems = _allReceipts.where((r) => _selectedItemIds.contains(r.id)).toList();
+    await ReceiptActionHelper.uploadSelectedReceipts(context, selectedItems, () {
+      setState(() {
+        _isSelectionMode = false;
+        _selectedItemIds.clear();
+      });
+      _loadReceipts();
+    });
   }
+
+  // --- スマート削除処理 (委譲) ---
+  Future<void> _deleteSelectedReceipts() async {
+    final selectedItems = _allReceipts.where((r) => _selectedItemIds.contains(r.id)).toList();
+    await ReceiptActionHelper.deleteSelectedReceipts(context, selectedItems, () {
+      setState(() {
+        _isSelectionMode = false;
+        _selectedItemIds.clear();
+      });
+      _loadReceipts();
+    });
+  }
+
+  // --- 単体削除確認 (委譲) ---
+  Future<void> _confirmDelete(BuildContext context, ReceiptData item) async {
+    await ReceiptActionHelper.confirmDelete(context, item, () {
+      _loadReceipts();
+    });
+  }
+
+  // _generateFileName は ReceiptActionHelper に移動したため削除
 
   // --- 選択モード制御 ---
   void _toggleSelectionMode(String id) {
@@ -580,30 +362,12 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> with TickerProvid
           // 【追加】同期中のインジケータ
           if (_isSyncing) const LinearProgressIndicator(),
 
-          Container(
-            height: 60,
-            width: double.infinity,
-            color: colorScheme.surface,
-            child: _availableYears.isEmpty ? const SizedBox() : ListView.separated(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-              scrollDirection: Axis.horizontal,
-              itemCount: _availableYears.length,
-              separatorBuilder: (ctx, i) => const SizedBox(width: 12),
-              itemBuilder: (context, index) {
-                final year = _availableYears[index];
-                final isSelected = year == _currentDisplayDate.year;
-                return GestureDetector(
-                  onTap: () => _onYearChanged(year),
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
-                    decoration: BoxDecoration(color: isSelected ? colorScheme.primary : Colors.grey[300], borderRadius: BorderRadius.circular(20)),
-                    alignment: Alignment.center,
-                    child: Text('$year年', style: TextStyle(color: isSelected ? Colors.white : Colors.black87, fontWeight: FontWeight.bold)),
-                  ),
-                );
-              },
-            ),
+          YearSelector(
+            availableYears: _availableYears,
+            currentYear: _currentDisplayDate.year,
+            onYearChanged: _onYearChanged,
           ),
+
           Container(
             color: colorScheme.surfaceVariant,
             child: TabBar(controller: _tabController, isScrollable: true, tabAlignment: TabAlignment.start, tabs: _months.map((m) => Tab(text: '$m月')).toList(), labelColor: colorScheme.primary, unselectedLabelColor: Colors.grey[700], indicatorColor: colorScheme.primary),
