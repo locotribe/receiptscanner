@@ -387,72 +387,131 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> with TickerProvid
     );
   }
 
+// ... 前略 ...
+
   Widget _buildReceiptListForMonth(DateTime date) {
     final monthlyItems = _allReceipts.where((r) {
       if (r.date == null) return false;
       return r.date!.year == date.year && r.date!.month == date.month;
     }).toList();
 
+    // 【追加】合計金額の計算
+    final totalAmount = monthlyItems.fold(0, (sum, item) => sum + (item.amount ?? 0));
+    final formatter = NumberFormat("#,###");
+
     if (monthlyItems.isEmpty) {
-      return Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [Icon(Icons.receipt_long, size: 64, color: Colors.grey[300]), const SizedBox(height: 16), const Text('レシートはありません', style: TextStyle(color: Colors.grey))]));
+      // 修正: Empty状態でも合計0円を表示したい場合はここを調整しますが、
+      // 通常はデータがないのでそのまま「レシートはありません」で良いでしょう。
+      return Center(
+          child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(Icons.receipt_long, size: 64, color: Colors.grey[300]),
+                const SizedBox(height: 16),
+                const Text('レシートはありません', style: TextStyle(color: Colors.grey))
+              ]));
     }
 
-    return ListView.builder(
-      padding: const EdgeInsets.only(bottom: 20, top: 8),
-      itemCount: monthlyItems.length,
-      itemBuilder: (context, index) {
-        final item = monthlyItems[index];
-        final isSelected = _selectedItemIds.contains(item.id);
+    // 【修正】ListViewをColumnで囲み、下に合計欄を追加
+    return Column(
+      children: [
+        Expanded(
+          child: ListView.builder(
+            padding: const EdgeInsets.only(bottom: 20, top: 8),
+            itemCount: monthlyItems.length,
+            itemBuilder: (context, index) {
+              final item = monthlyItems[index];
+              final isSelected = _selectedItemIds.contains(item.id);
 
-        return ReceiptListItem(
-          item: item,
-          isSelectionMode: _isSelectionMode,
-          isSelected: isSelected,
-          onTap: () async {
-            if (_isSelectionMode) { _toggleItemSelection(item.id); return; }
+              return ReceiptListItem(
+                item: item,
+                isSelectionMode: _isSelectionMode,
+                isSelected: isSelected,
+                onTap: () async {
+                  // ... (既存のonTap処理) ...
+                  if (_isSelectionMode) { _toggleItemSelection(item.id); return; }
 
-            // ファイル有無チェック (タップ時にも再確認)
-            bool fileExists = false;
-            if (item.imagePath != null) {
-              fileExists = File(item.imagePath!).existsSync();
-            }
+                  bool fileExists = false;
+                  if (item.imagePath != null) {
+                    fileExists = File(item.imagePath!).existsSync();
+                  }
 
-            if (fileExists) {
-              Navigator.push(context, MaterialPageRoute(builder: (context) => EditReceiptScreen(initialData: item, isEditing: true))).then((result) { if (result == true) _loadReceipts(); });
-              return;
-            }
+                  if (fileExists) {
+                    Navigator.push(context, MaterialPageRoute(builder: (context) => EditReceiptScreen(initialData: item, isEditing: true))).then((result) { if (result == true) _loadReceipts(); });
+                    return;
+                  }
 
-            if (item.isUploaded == 1 && item.driveFileId != null) {
-              final bool? download = await showDialog<bool>(
-                context: context,
-                builder: (ctx) => AlertDialog(
-                  title: const Text('画像のダウンロード'),
-                  content: const Text('このレシート画像は端末から削除されています。\n編集するためにダウンロードしますか？'),
-                  actions: [TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('キャンセル')), ElevatedButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('ダウンロード'))],
-                ),
+                  if (item.isUploaded == 1 && item.driveFileId != null) {
+                    final bool? download = await showDialog<bool>(
+                      context: context,
+                      builder: (ctx) => AlertDialog(
+                        title: const Text('画像のダウンロード'),
+                        content: const Text('このレシート画像は端末から削除されています。\n編集するためにダウンロードしますか？'),
+                        actions: [TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('キャンセル')), ElevatedButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('ダウンロード'))],
+                      ),
+                    );
+                    if (download == true) {
+                      // ... (既存のダウンロード処理) ...
+                      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('ダウンロード中...')));
+                      final downloadedFile = await GoogleDriveService.instance.downloadFile(item.driveFileId!, item.imagePath!);
+                      if (!context.mounted) return;
+                      ScaffoldMessenger.of(context).hideCurrentSnackBar();
+                      if (downloadedFile != null) {
+                        _loadReceipts();
+                        Navigator.push(context, MaterialPageRoute(builder: (context) => EditReceiptScreen(initialData: item, isEditing: true))).then((result) { if (result == true) _loadReceipts(); });
+                      } else {
+                        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('ダウンロードに失敗しました')));
+                      }
+                    }
+                  } else {
+                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('このレシートはまだクラウドに画像がアップロードされていません')));
+                  }
+                },
+                onLongPress: () { if (!_isSelectionMode) _toggleSelectionMode(item.id); },
+                onUpload: (context) => _uploadReceipt(item),
+                onDelete: (context) => _confirmDelete(context, item),
               );
-              if (download == true) {
-                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('ダウンロード中...')));
-                final downloadedFile = await GoogleDriveService.instance.downloadFile(item.driveFileId!, item.imagePath!);
-                if (!context.mounted) return;
-                ScaffoldMessenger.of(context).hideCurrentSnackBar();
-                if (downloadedFile != null) {
-                  _loadReceipts();
-                  Navigator.push(context, MaterialPageRoute(builder: (context) => EditReceiptScreen(initialData: item, isEditing: true))).then((result) { if (result == true) _loadReceipts(); });
-                } else {
-                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('ダウンロードに失敗しました')));
-                }
-              }
-            } else {
-              // 他端末ローカルの場合 (警告アイコン)
-              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('このレシートはまだクラウドに画像がアップロードされていません')));
-            }
-          },
-          onLongPress: () { if (!_isSelectionMode) _toggleSelectionMode(item.id); },
-          onUpload: (context) => _uploadReceipt(item),
-          onDelete: (context) => _confirmDelete(context, item),
-        );
-      },
+            },
+          ),
+        ),
+        // 【追加】合計金額表示エリア
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+          decoration: BoxDecoration(
+            color: Theme.of(context).colorScheme.surface,
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withOpacity(0.1),
+                blurRadius: 4,
+                offset: const Offset(0, -2),
+              ),
+            ],
+          ),
+          child: SafeArea(
+            top: false,
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                const Text(
+                  '合計金額',
+                  style: TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                Text(
+                  '¥${formatter.format(totalAmount)}',
+                  style: TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.bold,
+                    color: Theme.of(context).colorScheme.primary,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
     );
   }
 }
