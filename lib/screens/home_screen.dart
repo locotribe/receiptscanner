@@ -93,8 +93,9 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> with TickerProvid
     setState(() {
       final selectedMonth = _months[_tabController.index];
       _currentDisplayDate = DateTime(_currentDisplayDate.year, selectedMonth);
-      _isSelectionMode = false;
-      _selectedItemIds.clear();
+      // 【修正】月を変更しても選択モードを解除しないように削除
+      // _isSelectionMode = false;
+      // _selectedItemIds.clear();
     });
   }
 
@@ -123,7 +124,6 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> with TickerProvid
         years.add(r.date!.year);
       }
     }
-    // 【修正】昇順ソートに変更 (古い年が左側、新しい年が右側)
     List<int> sortedYears = years.toList()..sort((a, b) => a.compareTo(b));
 
     setState(() {
@@ -135,8 +135,9 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> with TickerProvid
   void _onYearChanged(int year) {
     setState(() {
       _currentDisplayDate = DateTime(year, _currentDisplayDate.month);
-      _isSelectionMode = false;
-      _selectedItemIds.clear();
+      // 【修正】年を変更しても選択モードを解除しないように削除
+      // _isSelectionMode = false;
+      // _selectedItemIds.clear();
     });
   }
 
@@ -199,7 +200,6 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> with TickerProvid
       final receiptData = _parser.parse(recognizedText);
       receiptData.imagePath = imagePath;
 
-      // 1. 電話番号による店名検索 (DB依存のためここに残す)
       if (receiptData.tel != null && receiptData.tel!.isNotEmpty) {
         final knownStoreName = await DatabaseHelper.instance.getStoreNameByTel(receiptData.tel!);
         if (knownStoreName != null && knownStoreName.isNotEmpty) {
@@ -207,12 +207,10 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> with TickerProvid
         }
       }
 
-      // 2. 税額情報の補正 (Logic委譲)
       ReceiptValidator.refineTaxData(receiptData);
 
       if (!mounted) return;
 
-      // 3. 警告チェック (Logic委譲)
       final qualityWarnings = ReceiptValidator.getQualityWarnings(receiptData);
 
       if (qualityWarnings.isNotEmpty) {
@@ -255,10 +253,8 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> with TickerProvid
       if (result == true) {
         await _loadReceipts();
 
-        // 保存直後にデータを同期 (Push)
         if (receiptData.id.isNotEmpty) {
           final savedData = _allReceipts.firstWhere((r) => r.id == receiptData.id, orElse: () => receiptData);
-          // バックグラウンドで同期実行
           GoogleDriveService.instance.syncReceiptToCloud(savedData);
         }
 
@@ -282,14 +278,12 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> with TickerProvid
     } catch (e) { print('Scan error: $e'); }
   }
 
-  // --- 単体アップロード処理 (委譲) ---
   Future<void> _uploadReceipt(ReceiptData item) async {
     await ReceiptActionHelper.uploadReceipt(context, item, () {
       _loadReceipts();
     });
   }
 
-  // --- 一括アップロード処理 (委譲) ---
   Future<void> _uploadSelectedReceipts() async {
     final selectedItems = _allReceipts.where((r) => _selectedItemIds.contains(r.id)).toList();
     await ReceiptActionHelper.uploadSelectedReceipts(context, selectedItems, () {
@@ -301,7 +295,6 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> with TickerProvid
     });
   }
 
-  // --- スマート削除処理 (委譲) ---
   Future<void> _deleteSelectedReceipts() async {
     final selectedItems = _allReceipts.where((r) => _selectedItemIds.contains(r.id)).toList();
     await ReceiptActionHelper.deleteSelectedReceipts(context, selectedItems, () {
@@ -313,7 +306,6 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> with TickerProvid
     });
   }
 
-  // --- 単体削除確認 (委譲) ---
   Future<void> _confirmDelete(BuildContext context, ReceiptData item) async {
     await ReceiptActionHelper.confirmDelete(context, item, () {
       _loadReceipts();
@@ -327,23 +319,47 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> with TickerProvid
   void _toggleItemSelection(String id) {
     setState(() { if (_selectedItemIds.contains(id)) { _selectedItemIds.remove(id); if (_selectedItemIds.isEmpty) _isSelectionMode = false; } else { _selectedItemIds.add(id); } });
   }
+
+  // 【修正】全選択ロジックの変更
+  // 月をまたいで選択している場合でも、現在表示中の月のアイテムだけを追加または解除するように変更
   void _selectAllItems() {
     final currentMonthItems = _allReceipts.where((r) => r.date != null && r.date!.year == _currentDisplayDate.year && r.date!.month == _currentDisplayDate.month).toList();
-    setState(() { if (_selectedItemIds.length == currentMonthItems.length) { _selectedItemIds.clear(); _isSelectionMode = false; } else { _selectedItemIds.addAll(currentMonthItems.map((e) => e.id)); } });
+
+    // 現在の月のアイテムがすべて選択済みかどうかを判定
+    bool isAllCurrentSelected = currentMonthItems.every((item) => _selectedItemIds.contains(item.id));
+
+    setState(() {
+      if (isAllCurrentSelected) {
+        // 今月のアイテムだけを選択解除
+        for (var item in currentMonthItems) {
+          _selectedItemIds.remove(item.id);
+        }
+        // 全ての選択がなくなったらモード終了
+        if (_selectedItemIds.isEmpty) {
+          _isSelectionMode = false;
+        }
+      } else {
+        // 今月のアイテムを全て選択（他の月の選択は維持）
+        for (var item in currentMonthItems) {
+          _selectedItemIds.add(item.id);
+        }
+      }
+    });
   }
 
   // --- UI構築 ---
   @override
   Widget build(BuildContext context) {
-    // ... Scaffold 省略なし ...
     final colorScheme = Theme.of(context).colorScheme;
     return Scaffold(
       drawer: const AppDrawer(),
       appBar: AppBar(
-        // ... AppBar 省略なし ...
         backgroundColor: _isSelectionMode ? Colors.grey[800] : colorScheme.inversePrimary,
         foregroundColor: _isSelectionMode ? Colors.white : Colors.black,
-        title: _isSelectionMode ? Text('${_selectedItemIds.length}件 選択中') : Column(crossAxisAlignment: CrossAxisAlignment.start, children: [const Text('レシート帳'), if (_getFilterLabel() != null) Text(_getFilterLabel()!, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.normal), maxLines: 1, overflow: TextOverflow.ellipsis)]),
+        // ここで件数を表示している（変更なしで機能します）
+        title: _isSelectionMode
+            ? Text('${_selectedItemIds.length}件 選択中')
+            : Column(crossAxisAlignment: CrossAxisAlignment.start, children: [const Text('レシート帳'), if (_getFilterLabel() != null) Text(_getFilterLabel()!, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.normal), maxLines: 1, overflow: TextOverflow.ellipsis)]),
         leading: _isSelectionMode ? IconButton(icon: const Icon(Icons.close), onPressed: () { setState(() { _isSelectionMode = false; _selectedItemIds.clear(); }); }) : null,
         actions: _isSelectionMode
             ? [
@@ -358,7 +374,6 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> with TickerProvid
       ),
       body: Column(
         children: [
-          // 同期中のインジケータ
           if (_isSyncing) const LinearProgressIndicator(),
 
           YearSelector(
@@ -387,21 +402,16 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> with TickerProvid
     );
   }
 
-// ... 前略 ...
-
   Widget _buildReceiptListForMonth(DateTime date) {
     final monthlyItems = _allReceipts.where((r) {
       if (r.date == null) return false;
       return r.date!.year == date.year && r.date!.month == date.month;
     }).toList();
 
-    // 【追加】合計金額の計算
     final totalAmount = monthlyItems.fold(0, (sum, item) => sum + (item.amount ?? 0));
     final formatter = NumberFormat("#,###");
 
     if (monthlyItems.isEmpty) {
-      // 修正: Empty状態でも合計0円を表示したい場合はここを調整しますが、
-      // 通常はデータがないのでそのまま「レシートはありません」で良いでしょう。
       return Center(
           child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
@@ -412,7 +422,6 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> with TickerProvid
               ]));
     }
 
-    // 【修正】ListViewをColumnで囲み、下に合計欄を追加
     return Column(
       children: [
         Expanded(
@@ -421,6 +430,7 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> with TickerProvid
             itemCount: monthlyItems.length,
             itemBuilder: (context, index) {
               final item = monthlyItems[index];
+              // IDが含まれているかチェックするだけなので、月をまたいでも正しく機能します
               final isSelected = _selectedItemIds.contains(item.id);
 
               return ReceiptListItem(
@@ -428,7 +438,6 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> with TickerProvid
                 isSelectionMode: _isSelectionMode,
                 isSelected: isSelected,
                 onTap: () async {
-                  // ... (既存のonTap処理) ...
                   if (_isSelectionMode) { _toggleItemSelection(item.id); return; }
 
                   bool fileExists = false;
@@ -451,7 +460,6 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> with TickerProvid
                       ),
                     );
                     if (download == true) {
-                      // ... (既存のダウンロード処理) ...
                       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('ダウンロード中...')));
                       final downloadedFile = await GoogleDriveService.instance.downloadFile(item.driveFileId!, item.imagePath!);
                       if (!context.mounted) return;
@@ -474,7 +482,6 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> with TickerProvid
             },
           ),
         ),
-        // 【追加】合計金額表示エリア
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
           decoration: BoxDecoration(

@@ -126,20 +126,26 @@ class ReceiptListItem extends StatelessWidget {
     );
   }
 
+  // 【修正】金額が0円より大きい場合のみ表示するように変更
   String _buildSubtitle(ReceiptData item) {
     String dateStr = DateFormat('MM/dd HH:mm').format(item.date!);
     final formatter = NumberFormat("#,###");
     List<String> details = [];
-    if (item.targetAmount10 != null) {
+
+    // 10%対象額があり、かつ0より大きい場合のみ表示
+    if (item.targetAmount10 != null && item.targetAmount10! > 0) {
       String line = '10%: ¥${formatter.format(item.targetAmount10)}';
       if (item.taxAmount10 != null) line += ' (¥${formatter.format(item.taxAmount10)})';
       details.add(line);
     }
-    if (item.targetAmount8 != null) {
+
+    // 8%対象額があり、かつ0より大きい場合のみ表示
+    if (item.targetAmount8 != null && item.targetAmount8! > 0) {
       String line = ' 8%: ¥${formatter.format(item.targetAmount8)}';
       if (item.taxAmount8 != null) line += ' (¥${formatter.format(item.taxAmount8)})';
       details.add(line);
     }
+
     if (details.isNotEmpty) return '$dateStr\n${details.join('\n')}';
     return dateStr;
   }

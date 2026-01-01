@@ -26,6 +26,9 @@ class _EditReceiptScreenState extends State<EditReceiptScreen> {
   final _pdfGenerator = PdfGenerator();
   Uint8List? _pdfImageBytes;
 
+  // 【追加】保存中かどうかを管理するフラグ
+  bool _isSaving = false;
+
   final _transformationController = TransformationController();
 
   @override
@@ -126,6 +129,9 @@ class _EditReceiptScreenState extends State<EditReceiptScreen> {
   }
 
   Future<void> _saveData() async {
+    // 保存中は連打できないようにする
+    if (_isSaving) return;
+
     if (_formKey.currentState!.validate()) {
       final storeName = _storeController.text;
       final amountStr = _amountController.text.replaceAll(',', '');
@@ -189,56 +195,78 @@ class _EditReceiptScreenState extends State<EditReceiptScreen> {
         }
       }
 
-      final dateStr = date.replaceAll('-', '');
-      final safeStoreName = storeName.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
-      final timestamp = DateFormat('HHmmss').format(DateTime.now());
-      final fileName = '${dateStr}_${timestamp}_${safeStoreName}_$amountStr.pdf';
+      // 【追加】ここから重い処理が始まるのでローディング表示を開始
+      setState(() {
+        _isSaving = true;
+      });
 
-      final appDir = await getApplicationDocumentsDirectory();
-      final saveDir = Directory('${appDir.path}/receipts');
-      if (!await saveDir.exists()) {
-        await saveDir.create(recursive: true);
-      }
-      final savePath = '${saveDir.path}/$fileName';
-
+      // try-finally ブロックでエラー時も確実にローディングを解除できるようにする（画面遷移しない場合）
       try {
-        if (widget.initialData.imagePath != null && widget.initialData.ocrData != null) {
-          final pdfBytes = await _pdfGenerator.generateSearchablePdf(
-              widget.initialData.imagePath!,
-              widget.initialData.ocrData!
-          );
-          final file = File(savePath);
-          await file.writeAsBytes(pdfBytes);
-          print('PDF Saved: $savePath');
-        } else {
-          // OCRデータなしの場合の処理
+        final dateStr = date.replaceAll('-', '');
+        final safeStoreName = storeName.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
+        final timestamp = DateFormat('HHmmss').format(DateTime.now());
+        final fileName = '${dateStr}_${timestamp}_${safeStoreName}_$amountStr.pdf';
+
+        final appDir = await getApplicationDocumentsDirectory();
+        final saveDir = Directory('${appDir.path}/receipts');
+        if (!await saveDir.exists()) {
+          await saveDir.create(recursive: true);
         }
-      } catch (e) {
-        print('PDF生成エラー: $e');
+        final savePath = '${saveDir.path}/$fileName';
+
+        try {
+          if (widget.initialData.imagePath != null && widget.initialData.ocrData != null) {
+            final pdfBytes = await _pdfGenerator.generateSearchablePdf(
+                widget.initialData.imagePath!,
+                widget.initialData.ocrData!
+            );
+            final file = File(savePath);
+            await file.writeAsBytes(pdfBytes);
+            print('PDF Saved: $savePath');
+          } else {
+            // OCRデータなしの場合の処理
+          }
+        } catch (e) {
+          print('PDF生成エラー: $e');
+          if (!mounted) return;
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('PDF生成に失敗しました')));
+
+          // エラーの場合はローディングを解除してリターン
+          setState(() {
+            _isSaving = false;
+          });
+          return;
+        }
+
+        String id = widget.initialData.id;
+        if (id.isEmpty) { id = '${storeName}_${date.replaceAll('-', '')}${time.replaceAll(':', '')}$amount'; }
+
+        String finalImagePath = widget.initialData.imagePath ?? '';
+        if (widget.initialData.ocrData != null) {
+          finalImagePath = savePath;
+        }
+
+        final saveData = ReceiptData(
+          id: id, storeName: storeName, date: dateTime, amount: amount,
+          targetAmount10: target10, targetAmount8: target8, taxAmount10: tax10, taxAmount8: tax8,
+          invoiceNumber: invoice, tel: formattedTel, rawText: widget.initialData.rawText,
+          imagePath: finalImagePath,
+          description: description,
+        );
+        await DatabaseHelper.instance.insertReceipt(saveData);
         if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('PDF生成に失敗しました')));
-        return;
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('保存しました')));
+        Navigator.pop(context, true);
+      } catch (e) {
+        // 万が一その他のエラーが発生した場合
+        print('保存エラー: $e');
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('保存に失敗しました: $e')));
+          setState(() {
+            _isSaving = false;
+          });
+        }
       }
-
-      String id = widget.initialData.id;
-      if (id.isEmpty) { id = '${storeName}_${date.replaceAll('-', '')}${time.replaceAll(':', '')}$amount'; }
-
-      String finalImagePath = widget.initialData.imagePath ?? '';
-      if (widget.initialData.ocrData != null) {
-        finalImagePath = savePath;
-      }
-
-      final saveData = ReceiptData(
-        id: id, storeName: storeName, date: dateTime, amount: amount,
-        targetAmount10: target10, targetAmount8: target8, taxAmount10: tax10, taxAmount8: tax8,
-        invoiceNumber: invoice, tel: formattedTel, rawText: widget.initialData.rawText,
-        imagePath: finalImagePath,
-        description: description,
-      );
-      await DatabaseHelper.instance.insertReceipt(saveData);
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('保存しました')));
-      Navigator.pop(context, true);
     }
   }
 
@@ -266,7 +294,8 @@ class _EditReceiptScreenState extends State<EditReceiptScreen> {
         backgroundColor: Colors.black.withOpacity(0.5),
         foregroundColor: Colors.white,
         actions: [
-          if (!widget.isEditing) IconButton(onPressed: () => Navigator.pop(context, 'rescan'), icon: const Icon(Icons.camera_alt)),
+          if (!widget.isEditing) IconButton(onPressed: _isSaving ? null : () => Navigator.pop(context, 'rescan'), icon: const Icon(Icons.camera_alt)),
+          // 保存中はボタンを無効化（見た目上は押せそうでも、_saveData冒頭でガード済み）
           IconButton(onPressed: _saveData, icon: const Icon(Icons.save)),
         ],
       ),
@@ -356,7 +385,7 @@ class _EditReceiptScreenState extends State<EditReceiptScreen> {
                             keyboardType: TextInputType.phone
                         ),
                         const SizedBox(height: 32),
-                        SizedBox(width: double.infinity, child: ElevatedButton.icon(onPressed: _saveData, icon: const Icon(Icons.save), label: const Text('保存する'), style: ElevatedButton.styleFrom(backgroundColor: colorScheme.primary, foregroundColor: colorScheme.onPrimary))),
+                        SizedBox(width: double.infinity, child: ElevatedButton.icon(onPressed: _isSaving ? null : _saveData, icon: const Icon(Icons.save), label: const Text('保存する'), style: ElevatedButton.styleFrom(backgroundColor: colorScheme.primary, foregroundColor: colorScheme.onPrimary))),
                         SizedBox(height: MediaQuery.of(context).viewInsets.bottom + 20),
                       ],
                     ),
@@ -365,6 +394,30 @@ class _EditReceiptScreenState extends State<EditReceiptScreen> {
               );
             },
           ),
+
+          // 【追加】保存中のローディングオーバーレイ
+          if (_isSaving)
+            Container(
+              color: Colors.black.withOpacity(0.6), // 少し濃いめの半透明
+              child: const Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    CircularProgressIndicator(color: Colors.white),
+                    SizedBox(height: 16),
+                    Text(
+                      '保存中...',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                        decoration: TextDecoration.none,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
         ],
       ),
     );
