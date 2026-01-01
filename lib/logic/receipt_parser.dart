@@ -336,19 +336,46 @@ class ReceiptParser {
     }
 
     // --- インボイス番号 (修正版: 揺れ吸収ロジック追加) ---
-    // Tの後ろにスペースやハイフン、Oが混ざるケースを許容
-    final invoiceRegex = RegExp(r'T[\s\-]*[0-9O]{13}');
-    for (var line in lines) {
-      String cleanLine = line.replaceAll(RegExp(r'[^a-zA-Z0-9\-\s]'), '');
-      final match = invoiceRegex.firstMatch(cleanLine);
-      if (match != null) {
-        String candidate = match.group(0)!;
-        // クリーニング: Tを残し、O→0、スペース・ハイフン削除
-        String cleanInvoice = candidate.replaceAll('O', '0').replaceAll(RegExp(r'[\s\-]'), '');
+    // 【修正】文字揺れ（B→8, S→5など）や「登録番号」キーワードからの推測に対応
+    final Map<String, String> ocrCorrectionMap = {
+      'O': '0', 'D': '0', 'Q': '0', 'o': '0',
+      'I': '1', 'l': '1', '|': '1',
+      'Z': '2', 'z': '2',
+      'S': '5', 's': '5',
+      'B': '8', 'b': '8',
+      'G': '6',
+    };
+    final invoiceKeywords = ['登録', '番号', 'No', 'Invoice', 'T1', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7', 'T8', 'T9'];
 
-        if (RegExp(r'^T\d{13}$').hasMatch(cleanInvoice)) {
-          invoiceNum = cleanInvoice;
-          print('[DEBUG] インボイス検出(補正済): $invoiceNum (元: "$candidate")');
+    for (var line in lines) {
+      // キーワード判定: 行内にキーワードがあるか、または T+数字っぽいものがあるか
+      bool hasKeyword = invoiceKeywords.any((k) => line.contains(k));
+      // Tの後に数字(や誤読文字)が5桁以上続くか？ (緩い判定)
+      bool looksLikeInvoice = RegExp(r'T[\s\-]?[0-9OQDBIZS]{5,}', caseSensitive: false).hasMatch(line);
+
+      if (!hasKeyword && !looksLikeInvoice) continue;
+
+      // 正規化: 全角英数を半角に変換（簡易正規化）
+      String norm = line.replaceAllMapped(RegExp(r'[０-９Ａ-Ｚａ-ｚ]'), (m) => String.fromCharCode(m.group(0)!.codeUnitAt(0) - 0xFEE0));
+
+      // 抽出用正規表現: (T)? + (スペース|ハイフン)* + (数字|誤読文字){13}
+      // Tはあってもなくても良いが、数字部分は13桁
+      final candidateRegex = RegExp(r'(T)?[\s\-]*([0-9OQDBIZSGl]{13})', caseSensitive: false);
+      final match = candidateRegex.firstMatch(norm);
+
+      if (match != null) {
+        String rawNumberPart = match.group(2)!;
+
+        // マップを使って数字に復元
+        String fixedNumber = rawNumberPart.split('').map((char) {
+          return ocrCorrectionMap[char.toUpperCase()] ?? char;
+        }).join('');
+
+        // 最終確認: 数字13桁か
+        if (RegExp(r'^\d{13}$').hasMatch(fixedNumber)) {
+          invoiceNum = 'T$fixedNumber';
+          // ログフォーマットは既存に合わせる
+          print('[DEBUG] インボイス検出(補正済): $invoiceNum (元: "${match.group(0)}")');
           break;
         }
       }
