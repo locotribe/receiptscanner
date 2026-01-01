@@ -1,3 +1,4 @@
+// lib/screens/home_screen.dart
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/cupertino.dart';
@@ -9,8 +10,11 @@ import 'package:intl/intl.dart';
 // 別ファイルからインポート
 import '../models/receipt_data.dart';
 import '../logic/receipt_parser.dart';
+import '../logic/receipt_validator.dart'; // 追加
 import '../database/database_helper.dart';
-import '../utils/date_picker_util.dart';
+// import '../utils/date_picker_util.dart'; // 削除
+import '../widgets/search_filter_sheet.dart';
+import '../widgets/receipt_list_item.dart';
 import 'edit_receipt_screen.dart';
 import '../logic/auth_service.dart';
 import 'components/app_drawer.dart';
@@ -152,87 +156,36 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> with TickerProvid
     return parts.join(' / ');
   }
 
-  void _showSearchModal() {
-    final minController = TextEditingController(text: _filterMinAmount?.toString() ?? '');
-    final maxController = TextEditingController(text: _filterMaxAmount?.toString() ?? '');
-    DateTime? tempStart = _filterStartDate;
-    DateTime? tempEnd = _filterEndDate;
-
-    showModalBottomSheet(
+  void _showSearchModal() async {
+    final result = await showModalBottomSheet<Map<String, dynamic>>(
       context: context,
       isScrollControlled: true,
       builder: (context) {
-        return StatefulBuilder(
-          builder: (context, setModalState) {
-            return Padding(
-              padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom, left: 16, right: 16, top: 16),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text('検索フィルター', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
-                  const SizedBox(height: 16),
-                  const Text('日付範囲', style: TextStyle(fontWeight: FontWeight.bold)),
-                  const SizedBox(height: 8),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: InkWell(
-                          onTap: () async {
-                            await DatePickerUtil.showJapaneseDatePicker(context, tempStart, (newDate) {
-                              setModalState(() {
-                                tempStart = newDate;
-                                if (tempEnd != null && tempEnd!.isBefore(newDate)) {
-                                  tempEnd = newDate;
-                                }
-                              });
-                            });
-                          },
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(vertical: 12),
-                            decoration: BoxDecoration(border: Border.all(color: Colors.grey.shade400), borderRadius: BorderRadius.circular(4), color: Colors.white),
-                            alignment: Alignment.center,
-                            child: Text(tempStart != null ? DateFormat('yyyy/MM/dd').format(tempStart!) : '開始日', style: TextStyle(color: tempStart != null ? Colors.black : Colors.grey, fontSize: 16)),
-                          ),
-                        ),
-                      ),
-                      const Padding(padding: EdgeInsets.symmetric(horizontal: 12.0), child: Text('〜', style: TextStyle(fontSize: 20))),
-                      Expanded(
-                        child: InkWell(
-                          onTap: () async {
-                            await DatePickerUtil.showJapaneseDatePicker(context, tempEnd, (newDate) {
-                              setModalState(() => tempEnd = newDate);
-                            }, minDate: tempStart);
-                          },
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(vertical: 12),
-                            decoration: BoxDecoration(border: Border.all(color: Colors.grey.shade400), borderRadius: BorderRadius.circular(4), color: Colors.white),
-                            alignment: Alignment.center,
-                            child: Text(tempEnd != null ? DateFormat('yyyy/MM/dd').format(tempEnd!) : '終了日', style: TextStyle(color: tempEnd != null ? Colors.black : Colors.grey, fontSize: 16)),
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 16),
-                  const Divider(),
-                  const SizedBox(height: 8),
-                  const Text('金額範囲', style: TextStyle(fontWeight: FontWeight.bold)),
-                  Row(children: [Expanded(child: TextField(controller: minController, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: '最小', suffixText: '円'))), const Padding(padding: EdgeInsets.symmetric(horizontal: 8.0), child: Text('〜')), Expanded(child: TextField(controller: maxController, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: '最大', suffixText: '円')))]),
-                  const SizedBox(height: 24),
-                  Row(mainAxisAlignment: MainAxisAlignment.end, children: [
-                    TextButton(onPressed: () { setState(() { _filterStartDate = null; _filterEndDate = null; _filterMinAmount = null; _filterMaxAmount = null; }); _loadReceipts(); Navigator.pop(context); }, child: const Text('クリア')),
-                    const SizedBox(width: 8),
-                    ElevatedButton(onPressed: () { setState(() { _filterStartDate = tempStart; _filterEndDate = tempEnd; _filterMinAmount = int.tryParse(minController.text); _filterMaxAmount = int.tryParse(maxController.text); }); _loadReceipts(); Navigator.pop(context); }, child: const Text('検索')),
-                  ]),
-                  const SizedBox(height: 20),
-                ],
-              ),
-            );
-          },
+        return SearchFilterSheet(
+          initialStartDate: _filterStartDate,
+          initialEndDate: _filterEndDate,
+          initialMinAmount: _filterMinAmount,
+          initialMaxAmount: _filterMaxAmount,
         );
       },
     );
+
+    if (result != null) {
+      setState(() {
+        if (result['clear'] == true) {
+          _filterStartDate = null;
+          _filterEndDate = null;
+          _filterMinAmount = null;
+          _filterMaxAmount = null;
+        } else {
+          _filterStartDate = result['startDate'];
+          _filterEndDate = result['endDate'];
+          _filterMinAmount = result['minAmount'];
+          _filterMaxAmount = result['maxAmount'];
+        }
+      });
+      _loadReceipts();
+    }
   }
 
   // --- OCR / スキャン処理 ---
@@ -244,7 +197,7 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> with TickerProvid
       final receiptData = _parser.parse(recognizedText);
       receiptData.imagePath = imagePath;
 
-      // ... OCR補正ロジック (省略なしで維持) ...
+      // 1. 電話番号による店名検索 (DB依存のためここに残す)
       if (receiptData.tel != null && receiptData.tel!.isNotEmpty) {
         final knownStoreName = await DatabaseHelper.instance.getStoreNameByTel(receiptData.tel!);
         if (knownStoreName != null && knownStoreName.isNotEmpty) {
@@ -252,41 +205,13 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> with TickerProvid
         }
       }
 
-      if (receiptData.amount != null && receiptData.amount! > 0) {
-        int total = receiptData.amount!;
-        if (receiptData.taxAmount10 != null) {
-          double rate = receiptData.taxAmount10! / total;
-          if (rate < 0.05 || rate > 0.15) receiptData.taxAmount10 = null;
-        }
-        if (receiptData.taxAmount8 != null) {
-          double rate = receiptData.taxAmount8! / total;
-          if (rate < 0.04 || rate > 0.12) receiptData.taxAmount8 = null;
-        }
-        bool hasTaxInfo = receiptData.targetAmount10 != null ||
-            receiptData.taxAmount10 != null ||
-            receiptData.targetAmount8 != null ||
-            receiptData.taxAmount8 != null;
-        if (!hasTaxInfo) {
-          int tax = (total * 10 / 110).floor();
-          int target = total - tax;
-          receiptData.taxAmount10 = tax;
-          receiptData.targetAmount10 = target;
-        }
-      }
+      // 2. 税額情報の補正 (Logic委譲)
+      ReceiptValidator.refineTaxData(receiptData);
 
       if (!mounted) return;
 
-      // ... 警告ロジック ...
-      List<String> qualityWarnings = [];
-      if (receiptData.amount == null) qualityWarnings.add('・合計金額が読み取れませんでした');
-      else if (receiptData.amount! > 10000000) qualityWarnings.add('・金額が異常に大きいです (${receiptData.amountFormatted}円)');
-
-      if (receiptData.date == null) qualityWarnings.add('・日付が読み取れませんでした');
-      else {
-        final now = DateTime.now();
-        if (receiptData.date!.isAfter(now.add(const Duration(days: 1)))) qualityWarnings.add('・日付が未来になっています (${receiptData.dateString})');
-        if (receiptData.date!.year < 2000) qualityWarnings.add('・日付が過去すぎます (${receiptData.dateString})');
-      }
+      // 3. 警告チェック (Logic委譲)
+      final qualityWarnings = ReceiptValidator.getQualityWarnings(receiptData);
 
       if (qualityWarnings.isNotEmpty) {
         if (!mounted) return;
@@ -329,10 +254,6 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> with TickerProvid
         await _loadReceipts();
 
         // 【追加】保存直後にデータを同期 (Push)
-        // 編集画面から戻ってきた時点で、DBには保存済みなので、最新のデータを同期する
-        // 直前に保存したIDを特定するのは難しいので、ここではシンプルに「全件リロードした中の最新」などを同期する手もあるが、
-        // EditReceiptScreenで保存した receiptData オブジェクトがここに戻ってこないので、
-        // receiptData.id を使ってDBから読み直して同期する。
         if (receiptData.id.isNotEmpty) {
           final savedData = _allReceipts.firstWhere((r) => r.id == receiptData.id, orElse: () => receiptData);
           // バックグラウンドで同期実行
@@ -720,113 +641,55 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> with TickerProvid
         final item = monthlyItems[index];
         final isSelected = _selectedItemIds.contains(item.id);
 
-        // ファイル有無チェック
-        bool fileExists = false;
-        if (item.imagePath != null) {
-          fileExists = File(item.imagePath!).existsSync();
-        }
+        return ReceiptListItem(
+          item: item,
+          isSelectionMode: _isSelectionMode,
+          isSelected: isSelected,
+          onTap: () async {
+            if (_isSelectionMode) { _toggleItemSelection(item.id); return; }
 
-        // 【修正】アイコン決定ロジック (4パターン)
-        Widget leadingIcon;
-        if (_isSelectionMode) {
-          leadingIcon = Icon(isSelected ? Icons.check_box : Icons.check_box_outline_blank, color: isSelected ? Colors.blue : Colors.grey, size: 30);
-        } else {
-          if (item.isUploaded == 1) {
-            // クラウドに画像あり
-            if (fileExists) {
-              leadingIcon = const Icon(Icons.check_circle, color: Colors.green, size: 30); // 完全同期
-            } else {
-              leadingIcon = const Icon(Icons.cloud_download, color: Colors.blue, size: 30); // クラウドのみ
+            // ファイル有無チェック (タップ時にも再確認)
+            bool fileExists = false;
+            if (item.imagePath != null) {
+              fileExists = File(item.imagePath!).existsSync();
             }
-          } else {
-            // クラウドに画像なし
+
             if (fileExists) {
-              leadingIcon = const Icon(Icons.cloud_upload, color: Colors.grey, size: 30); // 未アップロード
-            } else {
-              // 端末にも画像なし (他端末で登録されたデータ)
-              leadingIcon = const Icon(Icons.warning, color: Colors.orange, size: 30);
+              Navigator.push(context, MaterialPageRoute(builder: (context) => EditReceiptScreen(initialData: item, isEditing: true))).then((result) { if (result == true) _loadReceipts(); });
+              return;
             }
-          }
-        }
 
-        return Slidable(
-          key: Key(item.id),
-          enabled: !_isSelectionMode,
-          startActionPane: ActionPane(
-            motion: const ScrollMotion(), extentRatio: 0.25,
-            children: [SlidableAction(onPressed: (context) => _uploadReceipt(item), backgroundColor: Colors.blue, foregroundColor: Colors.white, icon: Icons.cloud_upload, label: '保存', borderRadius: const BorderRadius.only(topRight: Radius.circular(4), bottomRight: Radius.circular(4)))],
-          ),
-          endActionPane: ActionPane(
-            motion: const ScrollMotion(), extentRatio: 0.25,
-            children: [SlidableAction(onPressed: (context) => _confirmDelete(context, item), backgroundColor: Colors.red, foregroundColor: Colors.white, icon: Icons.delete, label: '削除', borderRadius: const BorderRadius.only(topLeft: Radius.circular(4), bottomLeft: Radius.circular(4)))],
-          ),
-          child: Card(
-            margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-            elevation: 2,
-            color: isSelected ? Colors.blue.withOpacity(0.1) : null,
-            child: ListTile(
-              leading: leadingIcon,
-              title: Text(item.storeName.isNotEmpty ? item.storeName : '店名なし', style: const TextStyle(fontWeight: FontWeight.bold)),
-              subtitle: Text(_buildSubtitle(item), style: const TextStyle(fontSize: 12, height: 1.4)),
-              trailing: Text('¥${item.amountFormatted}', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.blue)),
-
-              onTap: () async {
-                if (_isSelectionMode) { _toggleItemSelection(item.id); return; }
-
-                if (fileExists) {
+            if (item.isUploaded == 1 && item.driveFileId != null) {
+              final bool? download = await showDialog<bool>(
+                context: context,
+                builder: (ctx) => AlertDialog(
+                  title: const Text('画像のダウンロード'),
+                  content: const Text('このレシート画像は端末から削除されています。\n編集するためにダウンロードしますか？'),
+                  actions: [TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('キャンセル')), ElevatedButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('ダウンロード'))],
+                ),
+              );
+              if (download == true) {
+                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('ダウンロード中...')));
+                final downloadedFile = await GoogleDriveService.instance.downloadFile(item.driveFileId!, item.imagePath!);
+                if (!context.mounted) return;
+                ScaffoldMessenger.of(context).hideCurrentSnackBar();
+                if (downloadedFile != null) {
+                  _loadReceipts();
                   Navigator.push(context, MaterialPageRoute(builder: (context) => EditReceiptScreen(initialData: item, isEditing: true))).then((result) { if (result == true) _loadReceipts(); });
-                  return;
-                }
-
-                if (item.isUploaded == 1 && item.driveFileId != null) {
-                  final bool? download = await showDialog<bool>(
-                    context: context,
-                    builder: (ctx) => AlertDialog(
-                      title: const Text('画像のダウンロード'),
-                      content: const Text('このレシート画像は端末から削除されています。\n編集するためにダウンロードしますか？'),
-                      actions: [TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('キャンセル')), ElevatedButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('ダウンロード'))],
-                    ),
-                  );
-                  if (download == true) {
-                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('ダウンロード中...')));
-                    final downloadedFile = await GoogleDriveService.instance.downloadFile(item.driveFileId!, item.imagePath!);
-                    if (!context.mounted) return;
-                    ScaffoldMessenger.of(context).hideCurrentSnackBar();
-                    if (downloadedFile != null) {
-                      _loadReceipts();
-                      Navigator.push(context, MaterialPageRoute(builder: (context) => EditReceiptScreen(initialData: item, isEditing: true))).then((result) { if (result == true) _loadReceipts(); });
-                    } else {
-                      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('ダウンロードに失敗しました')));
-                    }
-                  }
                 } else {
-                  // 他端末ローカルの場合 (警告アイコン)
-                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('このレシートはまだクラウドに画像がアップロードされていません')));
+                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('ダウンロードに失敗しました')));
                 }
-              },
-              onLongPress: () { if (!_isSelectionMode) _toggleSelectionMode(item.id); },
-            ),
-          ),
+              }
+            } else {
+              // 他端末ローカルの場合 (警告アイコン)
+              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('このレシートはまだクラウドに画像がアップロードされていません')));
+            }
+          },
+          onLongPress: () { if (!_isSelectionMode) _toggleSelectionMode(item.id); },
+          onUpload: (context) => _uploadReceipt(item),
+          onDelete: (context) => _confirmDelete(context, item),
         );
       },
     );
-  }
-  // ... _buildSubtitle 等のヘルパーは省略なしで維持 ...
-  String _buildSubtitle(ReceiptData item) {
-    String dateStr = DateFormat('MM/dd HH:mm').format(item.date!);
-    final formatter = NumberFormat("#,###");
-    List<String> details = [];
-    if (item.targetAmount10 != null) {
-      String line = '10%: ¥${formatter.format(item.targetAmount10)}';
-      if (item.taxAmount10 != null) line += ' (¥${formatter.format(item.taxAmount10)})';
-      details.add(line);
-    }
-    if (item.targetAmount8 != null) {
-      String line = ' 8%: ¥${formatter.format(item.targetAmount8)}';
-      if (item.taxAmount8 != null) line += ' (¥${formatter.format(item.taxAmount8)})';
-      details.add(line);
-    }
-    if (details.isNotEmpty) return '$dateStr\n${details.join('\n')}';
-    return dateStr;
   }
 }
