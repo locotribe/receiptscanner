@@ -1,3 +1,4 @@
+// lib/screens/edit_receipt_screen.dart
 import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
@@ -20,8 +21,8 @@ class EditReceiptScreen extends StatefulWidget {
 
 class _EditReceiptScreenState extends State<EditReceiptScreen> {
   final _formKey = GlobalKey<FormState>();
-  // 【修正】_descriptionControllerを追加
-  late TextEditingController _storeController, _amountController, _target10Controller, _tax10Controller, _target8Controller, _tax8Controller, _telController, _dateController, _timeController, _invoiceController, _descriptionController;
+  // 【修正】税額用コントローラー(_tax10Controller, _tax8Controller)を削除
+  late TextEditingController _storeController, _amountController, _target10Controller, _target8Controller, _telController, _dateController, _timeController, _invoiceController, _descriptionController;
   final _pdfGenerator = PdfGenerator();
   Uint8List? _pdfImageBytes;
 
@@ -34,19 +35,17 @@ class _EditReceiptScreenState extends State<EditReceiptScreen> {
     _storeController = TextEditingController(text: d.storeName);
     _amountController = TextEditingController(text: d.amount?.toString() ?? '');
     _target10Controller = TextEditingController(text: d.targetAmount10?.toString() ?? '');
-    _tax10Controller = TextEditingController(text: d.taxAmount10?.toString() ?? '');
+    // 税額は表示しないためコントローラー初期化不要
     _target8Controller = TextEditingController(text: d.targetAmount8?.toString() ?? '');
-    _tax8Controller = TextEditingController(text: d.taxAmount8?.toString() ?? '');
+
     _telController = TextEditingController(text: _formatInitialTel(d.tel));
     _dateController = TextEditingController(text: d.dateString);
     _timeController = TextEditingController(text: d.timeString);
     _invoiceController = TextEditingController(text: d.invoiceNumber);
-    // 【追加】
     _descriptionController = TextEditingController(text: d.description);
 
     _amountController.addListener(_onAmountChanged);
-    _target10Controller.addListener(_onTarget10Changed);
-    _target8Controller.addListener(_onTarget8Changed);
+    // 税額計算用のリスナーは不要になったため削除
 
     _loadPdfImageIfNeeded();
   }
@@ -94,41 +93,18 @@ class _EditReceiptScreenState extends State<EditReceiptScreen> {
   void _onAmountChanged() {
     if (_amountController.text.isEmpty) return;
     int? total = int.tryParse(_amountController.text.replaceAll(',', ''));
-    if (total != null && total > 0 && _target8Controller.text.isEmpty && _tax8Controller.text.isEmpty) {
-      int tax = (total * 10 / 110).floor();
-      int target = total - tax;
-      _target10Controller.text = target.toString();
-      _tax10Controller.text = tax.toString();
-    }
-  }
-
-  void _onTarget10Changed() {
-    if (_target10Controller.text.isEmpty) return;
-    int? target = int.tryParse(_target10Controller.text.replaceAll(',', ''));
-    if (target != null) {
-      int tax = (target * 10 / 110).floor();
-      _tax10Controller.text = tax.toString();
-    }
-  }
-
-  void _onTarget8Changed() {
-    if (_target8Controller.text.isEmpty) return;
-    int? target = int.tryParse(_target8Controller.text.replaceAll(',', ''));
-    if (target != null) {
-      int tax = (target * 8 / 108).floor();
-      _tax8Controller.text = tax.toString();
+    // 合計金額が入力され、8%対象が空の場合は、全額を10%対象(税込)としてセットする
+    if (total != null && total > 0 && _target8Controller.text.isEmpty) {
+      _target10Controller.text = total.toString();
     }
   }
 
   @override
   void dispose() {
     _amountController.removeListener(_onAmountChanged);
-    _target10Controller.removeListener(_onTarget10Changed);
-    _target8Controller.removeListener(_onTarget8Changed);
-    _storeController.dispose(); _amountController.dispose(); _target10Controller.dispose(); _tax10Controller.dispose();
-    _target8Controller.dispose(); _tax8Controller.dispose(); _telController.dispose(); _dateController.dispose();
+    _storeController.dispose(); _amountController.dispose(); _target10Controller.dispose();
+    _target8Controller.dispose(); _telController.dispose(); _dateController.dispose();
     _timeController.dispose(); _invoiceController.dispose();
-    // 【追加】
     _descriptionController.dispose();
     _transformationController.dispose();
     super.dispose();
@@ -154,15 +130,26 @@ class _EditReceiptScreenState extends State<EditReceiptScreen> {
       final storeName = _storeController.text;
       final amountStr = _amountController.text.replaceAll(',', '');
       final amount = int.tryParse(amountStr);
+
+      // 対象額(税込)を取得
       final target10 = int.tryParse(_target10Controller.text.replaceAll(',', ''));
-      final tax10 = int.tryParse(_tax10Controller.text.replaceAll(',', ''));
       final target8 = int.tryParse(_target8Controller.text.replaceAll(',', ''));
-      final tax8 = int.tryParse(_tax8Controller.text.replaceAll(',', ''));
+
+      // 【修正】税額は入力値(税込対象額)から自動計算する
+      int? tax10;
+      if (target10 != null) {
+        tax10 = (target10 * 10 / 110).floor();
+      }
+
+      int? tax8;
+      if (target8 != null) {
+        tax8 = (target8 * 8 / 108).floor();
+      }
+
       final date = _dateController.text;
       final time = _timeController.text;
       final invoice = _invoiceController.text;
       final tel = _telController.text;
-      // 【追加】
       final description = _descriptionController.text;
 
       String telRaw = tel.replaceAll(RegExp(r'[^0-9]'), '');
@@ -246,7 +233,6 @@ class _EditReceiptScreenState extends State<EditReceiptScreen> {
         targetAmount10: target10, targetAmount8: target8, taxAmount10: tax10, taxAmount8: tax8,
         invoiceNumber: invoice, tel: formattedTel, rawText: widget.initialData.rawText,
         imagePath: finalImagePath,
-        // 【追加】
         description: description,
       );
       await DatabaseHelper.instance.insertReceipt(saveData);
@@ -339,7 +325,6 @@ class _EditReceiptScreenState extends State<EditReceiptScreen> {
                         ),
                         TextFormField(controller: _storeController, decoration: const InputDecoration(labelText: '店名')),
                         const SizedBox(height: 12),
-                        // 【追加】摘要（科目）入力欄
                         TextFormField(controller: _descriptionController, decoration: const InputDecoration(labelText: '摘要 (科目：消耗品、食材など)')),
                         const SizedBox(height: 12),
                         Row(children: [
@@ -350,19 +335,18 @@ class _EditReceiptScreenState extends State<EditReceiptScreen> {
                         const SizedBox(height: 12),
                         TextFormField(controller: _amountController, decoration: const InputDecoration(labelText: '合計金額 (税込)'), keyboardType: TextInputType.number),
                         const SizedBox(height: 8),
+
+                        // 【修正】税額入力欄を削除し、対象額のみを表示
                         Row(children: [
                           const Text('10%', style: TextStyle(fontWeight: FontWeight.bold)), const SizedBox(width: 16),
-                          Expanded(child: TextFormField(controller: _target10Controller, decoration: const InputDecoration(labelText: '対象額'), keyboardType: TextInputType.number)),
-                          const SizedBox(width: 8),
-                          Expanded(child: TextFormField(controller: _tax10Controller, decoration: const InputDecoration(labelText: '税額'), keyboardType: TextInputType.number)),
+                          Expanded(child: TextFormField(controller: _target10Controller, decoration: const InputDecoration(labelText: '対象計 (税込)'), keyboardType: TextInputType.number)),
                         ]),
                         const SizedBox(height: 8),
                         Row(children: [
                           const Text(' 8%', style: TextStyle(fontWeight: FontWeight.bold)), const SizedBox(width: 16),
-                          Expanded(child: TextFormField(controller: _target8Controller, decoration: const InputDecoration(labelText: '対象額'), keyboardType: TextInputType.number)),
-                          const SizedBox(width: 8),
-                          Expanded(child: TextFormField(controller: _tax8Controller, decoration: const InputDecoration(labelText: '税額'), keyboardType: TextInputType.number)),
+                          Expanded(child: TextFormField(controller: _target8Controller, decoration: const InputDecoration(labelText: '対象計 (税込)'), keyboardType: TextInputType.number)),
                         ]),
+
                         const SizedBox(height: 12),
                         TextFormField(controller: _invoiceController, decoration: const InputDecoration(labelText: 'インボイス登録番号')),
                         const SizedBox(height: 12),
