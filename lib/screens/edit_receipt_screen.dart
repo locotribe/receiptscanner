@@ -253,6 +253,14 @@ class _EditReceiptScreenState extends State<EditReceiptScreen> {
           imagePath: finalImagePath,
           description: description,
         );
+
+        // --- 学習機能の呼び出し ---
+        // ユーザーが入力した摘要と、OCRの生テキストを学習させる
+        await DatabaseHelper.instance.updateCategoryLearning(
+          widget.initialData.rawText,
+          description,
+        );
+
         await DatabaseHelper.instance.insertReceipt(saveData);
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('保存しました')));

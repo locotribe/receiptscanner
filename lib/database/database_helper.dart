@@ -1,3 +1,4 @@
+// lib/database/database_helper.dart
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
 import '../models/receipt_data.dart';
@@ -20,7 +21,7 @@ class DatabaseHelper {
 
     return await openDatabase(
       path,
-      version: 3,
+      version: 4,
       onCreate: _createDB,
       onUpgrade: _upgradeDB,
     );
@@ -46,6 +47,14 @@ class DatabaseHelper {
         drive_file_id TEXT
       )
     ''');
+    await db.execute('''
+      CREATE TABLE category_learning (
+        keyword TEXT,
+        category TEXT,
+        score INTEGER,
+        PRIMARY KEY (keyword, category)
+      )
+    ''');
   }
 
   Future<void> _upgradeDB(Database db, int oldVersion, int newVersion) async {
@@ -55,6 +64,16 @@ class DatabaseHelper {
     }
     if (oldVersion < 3) {
       await db.execute('ALTER TABLE receipts ADD COLUMN description TEXT');
+    }
+    if (oldVersion < 4) {
+      await db.execute('''
+        CREATE TABLE category_learning (
+          keyword TEXT,
+          category TEXT,
+          score INTEGER,
+          PRIMARY KEY (keyword, category)
+        )
+      ''');
     }
   }
 
@@ -180,13 +199,11 @@ class DatabaseHelper {
     return null;
   }
 
-  // --- 【ここがエラー原因でした】同期用マージメソッド ---
   Future<void> mergeReceipts(List<ReceiptData> cloudReceipts) async {
     final db = await instance.database;
     final batch = db.batch();
 
     for (var receipt in cloudReceipts) {
-      // 既存データをチェック
       final List<Map<String, dynamic>> existing = await db.query(
         'receipts',
         where: 'id = ?',
@@ -194,10 +211,8 @@ class DatabaseHelper {
       );
 
       if (existing.isEmpty) {
-        // 新規挿入
         batch.insert('receipts', receipt.toMap());
       } else {
-        // 既存データ更新（ローカルの画像パスを維持）
         final currentLocalPath = existing.first['image_path'] as String?;
         var newData = receipt.toMap();
         newData['image_path'] = currentLocalPath;
@@ -211,5 +226,78 @@ class DatabaseHelper {
       }
     }
     await batch.commit(noResult: true);
+  }
+
+  // --- 学習機能用メソッド ---
+
+  /// OCRテキストとユーザー入力カテゴリーを学習する
+  Future<void> updateCategoryLearning(String rawText, String category) async {
+    if (category.isEmpty) return;
+    final db = await instance.database;
+    final batch = db.batch();
+
+    // ノイズ除去: 数字、スペース、記号を削除して純粋な文字情報にする
+    final cleanText = rawText.replaceAll(RegExp(r'[0-9\s¥,.\-%:;]'), '');
+    if (cleanText.length < 2) return;
+
+    // 2文字ごとのN-gramを生成して学習 (例: "牛乳" -> "牛乳")
+    for (int i = 0; i < cleanText.length - 1; i++) {
+      final gram = cleanText.substring(i, i + 2);
+
+      // 古いSQLiteバージョンでも動作するように UPSERT (ON CONFLICT DO UPDATE) を使わず、
+      // INSERT OR IGNORE と UPDATE の組み合わせで実装する
+
+      // 1. 初期値0で挿入（既に存在する場合は何もしない）
+      batch.rawInsert('''
+        INSERT OR IGNORE INTO category_learning (keyword, category, score)
+        VALUES (?, ?, 0)
+      ''', [gram, category]);
+
+      // 2. スコアを加算（新規作成直後なら 0->1、既存なら score->score+1）
+      batch.rawUpdate('''
+        UPDATE category_learning
+        SET score = score + 1
+        WHERE keyword = ? AND category = ?
+      ''', [gram, category]);
+    }
+    await batch.commit(noResult: true);
+  }
+
+  /// OCRテキストから最も可能性の高いカテゴリーを予測する
+  Future<String?> predictCategory(String rawText) async {
+    final db = await instance.database;
+    final cleanText = rawText.replaceAll(RegExp(r'[0-9\s¥,.\-%:;]'), '');
+    if (cleanText.length < 2) return null;
+
+    // テキストから2文字ごとのキーワードを生成
+    List<String> grams = [];
+    for (int i = 0; i < cleanText.length - 1; i++) {
+      grams.add(cleanText.substring(i, i + 2));
+    }
+    if (grams.isEmpty) return null;
+
+    // 該当するキーワードの学習データを取得
+    final placeholders = List.filled(grams.length, '?').join(',');
+    final result = await db.query(
+      'category_learning',
+      where: 'keyword IN ($placeholders)',
+      whereArgs: grams,
+    );
+
+    if (result.isEmpty) return null;
+
+    // カテゴリーごとのスコアを集計
+    Map<String, int> scores = {};
+    for (var row in result) {
+      final cat = row['category'] as String;
+      final score = row['score'] as int;
+      scores[cat] = (scores[cat] ?? 0) + score;
+    }
+
+    if (scores.isEmpty) return null;
+
+    // 最もスコアが高いカテゴリーを返す
+    var sorted = scores.entries.toList()..sort((a, b) => b.value.compareTo(a.value));
+    return sorted.first.key;
   }
 }

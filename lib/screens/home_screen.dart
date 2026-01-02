@@ -207,6 +207,13 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> with TickerProvid
         }
       }
 
+      // --- 学習データに基づくカテゴリー予測 ---
+      // 読み取った生のテキストを基に、過去の入力パターンから最適なカテゴリーを推測する
+      final predictedCategory = await DatabaseHelper.instance.predictCategory(receiptData.rawText);
+      if (predictedCategory != null && predictedCategory.isNotEmpty) {
+        receiptData.description = predictedCategory;
+      }
+
       ReceiptValidator.refineTaxData(receiptData);
 
       if (!mounted) return;
