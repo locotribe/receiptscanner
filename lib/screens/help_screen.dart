@@ -7,169 +7,101 @@ class HelpScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('操作説明 / ヘルプ'),
-        backgroundColor: Theme.of(context).colorScheme.inversePrimary,
+        title: const Text('ヘルプ・使い方'),
       ),
       body: ListView(
-        padding: const EdgeInsets.all(16.0),
+        padding: const EdgeInsets.all(16),
         children: [
-          // --- トップバーのアイコン説明 ---
-          _buildSectionTitle('画面右上のアイコン (通常時)'),
-          _buildIconExplanation(
-            icon: Icons.search,
-            color: Colors.black87,
-            title: '検索 / 絞り込み',
-            description: '日付の範囲や、金額の範囲を指定してレシートを検索・絞り込み表示します。',
+          _buildSection(
+            context,
+            '1. レシートのスキャン',
+            const Icon(Icons.camera_alt, color: Colors.blue),
+            [
+              'ホーム画面右下のカメラアイコンからスキャンを開始します。',
+              '「カメラで撮影」または「ギャラリーから選択」が選べます。',
+              'OCR（文字認識）により、以下の項目を自動で読み取ります。',
+              '・日付、時刻\n・合計金額\n・店名（電話番号から検索）\n・インボイス登録番号（T+13桁）\n・税率ごとの対象額（10%/8%）',
+              '※インボイス番号は「T」が読み取れなかった場合や、「B→8」「S→5」のような誤認識も自動補正して検出します。',
+            ],
           ),
-          _buildIconExplanation(
-            icon: Icons.camera_alt,
-            color: Colors.black87,
-            title: 'レシート撮影',
-            description: 'カメラを起動して新しいレシートをスキャンします。\nスキャン画面からギャラリー（写真フォルダ）の画像を選択することも可能です。',
+          _buildSection(
+            context,
+            '2. 内容の確認と修正',
+            const Icon(Icons.edit, color: Colors.green),
+            [
+              'スキャン後、編集画面が表示されます。',
+              '【重要】税額の入力について',
+              '消費税額（10%/8%）は直接入力しません。「対象計（税込）」を入力すると、自動的に税額が計算されます。',
+              '・合計金額（税込）を入力し、内訳がある場合は各税率の「対象計」欄に入力してください。',
+              '・保存ボタンを押すと、画像から検索用PDFを生成して保存します（処理中は画面に「保存中」と表示されます）。',
+            ],
           ),
-
-          const Divider(height: 40),
-
-          // --- リストアイコンの説明 ---
-          _buildSectionTitle('リストのアイコン (左側)'),
-          _buildIconExplanation(
-            icon: Icons.cloud_upload,
-            color: Colors.grey,
-            title: '未バックアップ',
-            description: 'この端末で登録し、まだクラウドに保存していません。\nデータも画像もこの端末にしかありません。',
+          _buildSection(
+            context,
+            '3. 一覧画面と選択モード',
+            const Icon(Icons.list, color: Colors.orange),
+            [
+              '月ごとのタブでレシートを表示します。',
+              '画面下部に、表示中の月の「合計金額」が表示されます。',
+              '【複数選択モード】',
+              '・リストを長押しすると選択モードになります。',
+              '・月（タブ）を切り替えても選択状態は維持されます。複数の月にまたがってレシートを選択し、一括で操作できます。',
+              '・「全選択」ボタンは、現在表示されている月のレシートのみを全て選択（または解除）します。',
+            ],
           ),
-          _buildIconExplanation(
-            icon: Icons.check_circle,
-            color: Colors.green,
-            title: 'バックアップ済み (端末にあり)',
-            description: 'クラウドへの保存が完了しており、この端末にも画像がある状態です。\n安全に管理されています。',
+          _buildSection(
+            context,
+            '4. クラウド同期とアイコン',
+            const Icon(Icons.cloud_sync, color: Colors.purple),
+            [
+              'レシートの保存状態はアイコンで確認できます。',
+              '🟢 緑チェック: 端末とクラウドの両方に保存済み（安全）',
+              '🔵 青雲アイコン: クラウドのみに保存（タップして画像をダウンロード可能）',
+              '☁️ グレー雲アイコン: 端末のみに保存（未アップロード）',
+              '⚠️ オレンジ: どちらにも画像が見つからない状態',
+              'スワイプ操作で「保存（アップロード）」や「削除」が行えます。',
+            ],
           ),
-          _buildIconExplanation(
-            icon: Icons.cloud_download,
-            color: Colors.blue,
-            title: 'バックアップ済み (端末になし)',
-            description: '画像はクラウドにあり、端末からは削除して容量を節約している状態です。\nタップすると再ダウンロードできます。',
+          _buildSection(
+            context,
+            '5. 検索機能',
+            const Icon(Icons.search, color: Colors.red),
+            [
+              'ホーム画面右上の虫眼鏡アイコンから検索ができます。',
+              '期間（開始日〜終了日）や、金額の範囲（最小〜最大）を指定してレシートを絞り込めます。',
+              '絞り込み中はアイコンが赤く点灯します。',
+            ],
           ),
-          // 【追加】他端末ローカル状態の説明
-          _buildIconExplanation(
-            icon: Icons.warning,
-            color: Colors.orange,
-            title: '画像未アップロード',
-            description: '他の端末でデータ登録されましたが、まだ画像がクラウドにアップロードされていません。\n金額などの確認はできますが、画像のダウンロードはできません。',
-          ),
-
-          const Divider(height: 40),
-
-          // --- 複数選択モードの説明 ---
-          _buildSectionTitle('複数選択モード (長押し後)'),
-          const Padding(
-            padding: EdgeInsets.only(bottom: 8.0),
-            child: Text('レシートを長押しすると画面が切り替わり、画面右上に以下のボタンが表示されます。', style: TextStyle(fontSize: 14)),
-          ),
-          _buildIconExplanation(
-            icon: Icons.select_all,
-            color: Colors.black87,
-            title: '全選択 / 解除',
-            description: '表示中の月のレシートを全て選択状態にします。\nもう一度押すと選択を解除します。',
-          ),
-          _buildIconExplanation(
-            icon: Icons.cloud_upload,
-            color: Colors.black87,
-            title: '一括保存',
-            description: 'チェックを入れたレシートをまとめてGoogleドライブへアップロードします。',
-          ),
-          _buildIconExplanation(
-            icon: Icons.delete,
-            color: Colors.black87,
-            title: '一括削除',
-            description: 'チェックを入れたレシートをまとめて削除します。\nバックアップ済みデータが含まれる場合は、容量確保のための画像削除を行うか確認が入ります。',
-          ),
-          _buildIconExplanation(
-            icon: Icons.close,
-            color: Colors.black87,
-            title: 'モード終了 (×ボタン)',
-            description: '複数選択モードを終了して、通常の画面に戻ります（画面左上）。',
-          ),
-
-          const Divider(height: 40),
-
-          // --- 基本操作 ---
-          _buildSectionTitle('基本操作'),
-          _buildTextItem('右にスワイプ', '個別にGoogleドライブへアップロード（保存）します。'),
-          _buildTextItem('左にスワイプ', '個別にレシートを削除します。'),
-          _buildTextItem('タップ', '編集画面を開きます。\n画像がない場合はダウンロードの確認画面が出ます。'),
-          _buildTextItem('長押し', '複数選択モードになります。\nまとめて「保存」や「削除」が可能です。'),
-
-          const Divider(height: 40),
-
-          // --- 便利な機能 ---
-          _buildSectionTitle('便利な機能'),
-          _buildTextItem('自動同期', 'レシートを保存したタイミングや、アプリ起動時に自動的にクラウド上の台帳と同期します。'),
-          _buildTextItem('容量の節約', 'バックアップ済みのレシートを削除すると、リスト（文字データ）だけ残して画像ファイルが消去され、スマホの容量を節約できます。'),
-
-          const SizedBox(height: 20),
         ],
       ),
     );
   }
 
-  // 下線付きのタイトルを作成するメソッド
-  Widget _buildSectionTitle(String title) {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 12.0),
-      decoration: const BoxDecoration(
-        border: Border(bottom: BorderSide(color: Colors.grey, width: 1)),
-      ),
-      width: double.infinity,
-      padding: const EdgeInsets.only(bottom: 6.0),
-      child: Text(
-        title,
-        style: const TextStyle(
-          fontSize: 18,
-          fontWeight: FontWeight.bold,
+  Widget _buildSection(BuildContext context, String title, Icon icon, List<String> contents) {
+    return Card(
+      margin: const EdgeInsets.only(bottom: 16),
+      elevation: 2,
+      child: ExpansionTile(
+        leading: icon,
+        title: Text(
+          title,
+          style: const TextStyle(fontWeight: FontWeight.bold),
         ),
-      ),
-    );
-  }
-
-  Widget _buildIconExplanation({
-    required IconData icon,
-    required Color color,
-    required String title,
-    required String description,
-  }) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 8.0),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(icon, color: color, size: 32),
-          const SizedBox(width: 16),
-          Expanded(
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(title, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                const SizedBox(height: 4),
-                Text(description, style: const TextStyle(color: Colors.black87, height: 1.4)),
-              ],
+              children: contents.map((text) {
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: Text(
+                    text,
+                    style: const TextStyle(height: 1.5, fontSize: 14),
+                  ),
+                );
+              }).toList(),
             ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildTextItem(String title, String description) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 8.0),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text('● $title', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-          Padding(
-            padding: const EdgeInsets.only(left: 18.0, top: 4),
-            child: Text(description, style: const TextStyle(height: 1.4)),
           ),
         ],
       ),
