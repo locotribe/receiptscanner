@@ -314,22 +314,72 @@ class ReceiptParser {
     String? tel;
     String? invoiceNum;
 
-    // --- 電話番号解析 (修正版: 揺れ吸収ロジック追加) ---
-    // 従来の telRegex はハイフン必須だったが、緩い条件で探索する
-    final looseTelRegex = RegExp(r'[(]?[0O][0-9O\-\s)]{8,}[0-9O]');
-    for (var line in lines) {
-      if (line.contains(RegExp(r'20\d{2}'))) continue; // 日付誤検知防止
+// --- 電話番号解析 (修正版: キーワード優先＆誤検知防止) ---
+// 検索対象のキーワード（優先度高）
+    final telKeywords = RegExp(r'(TEL|Tel|tel|電話|連絡先|☎|☏|📞|📱)');
+    // 除外対象のキーワード（インボイスや会員番号の誤検知防止）
+    final excludeKeywords = RegExp(r'(登録|Invoice|No\.|Member|会員|ポイント)');
 
+    // 候補抽出用の正規表現
+    final looseTelRegex = RegExp(r'[(]?[0OQ][0-9OQ\-\s)]{8,}[0-9OQ]');
+
+    // ヘルパー関数: 文字列から電話番号候補を抽出して検証する
+    String? extractPhone(String line) {
       final match = looseTelRegex.firstMatch(line);
-      if (match != null) {
-        String candidate = match.group(0)!;
-        // クリーニング: O→0, 数字以外削除
-        String digits = candidate.replaceAll(RegExp(r'[O]'), '0').replaceAll(RegExp(r'[^0-9]'), '');
+      if (match == null) return null;
 
-        // 日本の電話番号は10桁(固定)か11桁(携帯・IP)、かつ先頭は0
-        if ((digits.length == 10 || digits.length == 11) && digits.startsWith('0')) {
-          tel = digits;
-          print('[DEBUG] 電話番号検出(補正済): $tel (元: "$candidate")');
+      String candidate = match.group(0)!;
+
+      // 1. 誤読文字の補正 (O, Q, o -> 0)
+      String corrected = candidate.replaceAll(RegExp(r'[OQo]'), '0');
+
+      // 2. 検証用に数字のみを抽出する
+      String digits = corrected.replaceAll(RegExp(r'[^0-9]'), '');
+
+      // 条件チェック:
+      // 1. 10桁(固定) or 11桁(携帯/IP)
+      // 2. 先頭は0
+      // 3. 先頭が"00"ではない (インボイス誤検知防止)
+      if ((digits.length == 10 || digits.length == 11) &&
+          digits.startsWith('0') &&
+          !digits.startsWith('00')) {
+
+        // 【修正点】 ハイフンが含まれている場合は、ハイフン付きの文字列を採用する
+        // 数字とハイフン以外（スペースやカッコなど）を除去して返す
+        if (corrected.contains('-')) {
+          return corrected.replaceAll(RegExp(r'[^0-9\-]'), '');
+        }
+
+        // ハイフンがない場合は数字だけを返す（後の画面で自動フォーマットされる）
+        return digits;
+      }
+      return null;
+    }
+
+    // 【Pass 1】 キーワード優先探索
+    for (var line in lines) {
+      if (line.contains(RegExp(r'20\d{2}'))) continue;
+      if (!line.contains(telKeywords)) continue;
+
+      String? result = extractPhone(line); // digitsではなくresultを受け取る
+      if (result != null) {
+        tel = result;
+        print('[DEBUG] 電話番号検出(キーワード優先): $tel (元行: "$line")');
+        break;
+      }
+    }
+
+    // 【Pass 2】 全行探索（フォールバック）
+    if (tel == null) {
+      for (var line in lines) {
+        if (line.contains(RegExp(r'20\d{2}'))) continue;
+        if (line.contains(telKeywords)) continue;
+        if (line.contains(excludeKeywords)) continue;
+
+        String? result = extractPhone(line);
+        if (result != null) {
+          tel = result;
+          print('[DEBUG] 電話番号検出(フォールバック): $tel (元行: "$line")');
           break;
         }
       }
