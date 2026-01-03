@@ -21,7 +21,8 @@ class EditReceiptScreen extends StatefulWidget {
 
 class _EditReceiptScreenState extends State<EditReceiptScreen> {
   final _formKey = GlobalKey<FormState>();
-  late TextEditingController _storeController, _amountController, _target10Controller, _target8Controller, _telController, _dateController, _timeController, _invoiceController, _descriptionController;
+  // 【追加】_memoControllerを追加
+  late TextEditingController _storeController, _amountController, _target10Controller, _target8Controller, _telController, _dateController, _timeController, _invoiceController, _descriptionController, _memoController;
   final _pdfGenerator = PdfGenerator();
 
   List<ImageProvider> _pageImages = [];
@@ -40,10 +41,18 @@ class _EditReceiptScreenState extends State<EditReceiptScreen> {
     _target8Controller = TextEditingController(text: d.targetAmount8?.toString() ?? '');
 
     _telController = TextEditingController(text: _formatInitialTel(d.tel));
-    _dateController = TextEditingController(text: d.dateString);
+
+    // 【修正】日付の初期表示をスラッシュ区切りに変換
+    String initialDateStr = d.dateString.replaceAll('-', '/');
+    _dateController = TextEditingController(text: initialDateStr);
+
     _timeController = TextEditingController(text: d.timeString);
     _invoiceController = TextEditingController(text: d.invoiceNumber);
     _descriptionController = TextEditingController(text: d.description);
+
+    // 【追加】メモ欄用コントローラー（初期値は空、もしくは必要なら保存データから読み込む）
+    _memoController = TextEditingController(text: d.memo);
+
 
     _amountController.addListener(_onAmountChanged);
 
@@ -67,9 +76,8 @@ class _EditReceiptScreenState extends State<EditReceiptScreen> {
         if (await file.exists()) {
           final bytes = await file.readAsBytes();
 
-          // 【修正】scale パラメータエラーへの対応
           // scale: 2.0 の代わりに dpi: 144.0 (72 * 2) を指定して高解像度化
-          await for (final page in Printing.raster(bytes, dpi: 144.0)) {
+          await for (final page in Printing.raster(bytes, dpi: 72.0)) {
             final pngBytes = await page.toPng();
             if (mounted) {
               setState(() {
@@ -124,16 +132,26 @@ class _EditReceiptScreenState extends State<EditReceiptScreen> {
     _storeController.dispose(); _amountController.dispose(); _target10Controller.dispose();
     _target8Controller.dispose(); _telController.dispose(); _dateController.dispose();
     _timeController.dispose(); _invoiceController.dispose();
-    _descriptionController.dispose();
+    _descriptionController.dispose(); _memoController.dispose(); // 【追加】dispose
     _transformationController.dispose();
     super.dispose();
   }
 
   Future<void> _pickDate() async {
     DateTime initial = DateTime.now();
-    try { if (_dateController.text.isNotEmpty) initial = DateFormat('yyyy-MM-dd').parse(_dateController.text); } catch (_) {}
+    try {
+      if (_dateController.text.isNotEmpty) {
+        // 【修正】スラッシュ区切りでパース
+        initial = DateFormat('yyyy/MM/dd').parse(_dateController.text);
+      }
+    } catch (_) {
+      // フォールバック: ハイフン区切りなども試すか、現在は現在時刻へ
+      try { initial = DateFormat('yyyy-MM-dd').parse(_dateController.text); } catch(__){}
+    }
+
     await DatePickerUtil.showJapaneseDatePicker(context, initial, (newDate) {
-      setState(() => _dateController.text = DateFormat('yyyy-MM-dd').format(newDate));
+      // 【修正】選択結果をスラッシュ区切りでセット
+      setState(() => _dateController.text = DateFormat('yyyy/MM/dd').format(newDate));
     });
   }
 
@@ -170,6 +188,7 @@ class _EditReceiptScreenState extends State<EditReceiptScreen> {
       final invoice = _invoiceController.text;
       final tel = _telController.text;
       final description = _descriptionController.text;
+      final memo = _memoController.text;
 
       String telRaw = tel.replaceAll(RegExp(r'[^0-9]'), '');
       String formattedTel = telRaw;
@@ -187,7 +206,15 @@ class _EditReceiptScreenState extends State<EditReceiptScreen> {
       }
 
       DateTime? dateTime;
-      try { if (date.isNotEmpty) { String t = time.isEmpty ? '00:00' : time; dateTime = DateFormat('yyyy-MM-dd HH:mm').parse('$date $t'); } } catch (_) {}
+      try {
+        if (date.isNotEmpty) {
+          String t = time.isEmpty ? '00:00' : time;
+          // 【修正】スラッシュ区切りをハイフンに戻してパース、または直接フォーマット指定
+          // 保存用ロジックがハイフン前提の可能性があるため、念のためDateオブジェクト生成には柔軟に対応
+          String normalizedDate = date.replaceAll('/', '-');
+          dateTime = DateFormat('yyyy-MM-dd HH:mm').parse('$normalizedDate $t');
+        }
+      } catch (_) {}
 
       if (dateTime != null && amount != null) {
         final isDuplicate = await DatabaseHelper.instance.checkDuplicate(dateTime, amount, excludeId: widget.initialData.id);
@@ -213,7 +240,7 @@ class _EditReceiptScreenState extends State<EditReceiptScreen> {
       });
 
       try {
-        final dateStr = date.replaceAll('-', '');
+        final dateStr = date.replaceAll(RegExp(r'[/-]'), ''); // スラッシュもハイフンも除去
         final safeStoreName = storeName.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
         final timestamp = DateFormat('HHmmss').format(DateTime.now());
         final fileName = '${dateStr}_${timestamp}_${safeStoreName}_$amountStr.pdf';
@@ -255,7 +282,7 @@ class _EditReceiptScreenState extends State<EditReceiptScreen> {
         }
 
         String id = widget.initialData.id;
-        if (id.isEmpty) { id = '${storeName}_${date.replaceAll('-', '')}${time.replaceAll(':', '')}$amount'; }
+        if (id.isEmpty) { id = '${storeName}_${date.replaceAll(RegExp(r'[/-]'), '')}${time.replaceAll(':', '')}$amount'; }
 
         String finalImagePath = widget.initialData.imagePath ?? '';
         if (widget.initialData.ocrData != null || widget.initialData.sourceOcrData != null) {
@@ -267,7 +294,7 @@ class _EditReceiptScreenState extends State<EditReceiptScreen> {
           targetAmount10: target10, targetAmount8: target8, taxAmount10: tax10, taxAmount8: tax8,
           invoiceNumber: invoice, tel: formattedTel, rawText: widget.initialData.rawText,
           imagePath: finalImagePath,
-          description: description,
+          memo: memo, // 【追加】ここでメモを保存
         );
 
         await DatabaseHelper.instance.updateCategoryLearning(
@@ -418,8 +445,10 @@ class _EditReceiptScreenState extends State<EditReceiptScreen> {
                             ),
                           ),
 
-                        TextFormField(controller: _storeController, decoration: const InputDecoration(labelText: '店名')),
+                        // 【修正】ラベルを「レシート・領収書発行元」に変更
+                        TextFormField(controller: _storeController, decoration: const InputDecoration(labelText: 'レシート・領収書発行元')),
                         const SizedBox(height: 12),
+                        // 既存の摘要欄（店名の下）は修正しない
                         TextFormField(controller: _descriptionController, decoration: const InputDecoration(labelText: '摘要 (科目：消耗品、食材など)')),
                         const SizedBox(height: 12),
                         Row(children: [
@@ -428,18 +457,50 @@ class _EditReceiptScreenState extends State<EditReceiptScreen> {
                           Expanded(flex: 2, child: TextFormField(controller: _timeController, decoration: const InputDecoration(labelText: '時間'), readOnly: true, onTap: _pickTime)),
                         ]),
                         const SizedBox(height: 12),
+                        // 合計金額（修正なし）
                         TextFormField(controller: _amountController, decoration: const InputDecoration(labelText: '合計金額 (税込)'), keyboardType: TextInputType.number),
                         const SizedBox(height: 8),
 
-                        Row(children: [
-                          const Text('10%', style: TextStyle(fontWeight: FontWeight.bold)), const SizedBox(width: 16),
-                          Expanded(child: TextFormField(controller: _target10Controller, decoration: const InputDecoration(labelText: '対象計 (税込)'), keyboardType: TextInputType.number)),
-                        ]),
+                        // 【修正】10%対象金額: ラベル変更 & 入力ボックス幅を半分程度に
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            const Text(' 10%対象金額', style: TextStyle(fontWeight: FontWeight.bold)),
+                            const SizedBox(width: 16),
+                            SizedBox(
+                              width: MediaQuery.of(context).size.width * 0.5, // 画面幅の半分
+                              child: TextFormField(
+                                  controller: _target10Controller,
+                                  decoration: const InputDecoration(labelText: '対象計 (税込)'),
+                                  keyboardType: TextInputType.number
+                              ),
+                            ),
+                          ],
+                        ),
                         const SizedBox(height: 8),
-                        Row(children: [
-                          const Text(' 8%', style: TextStyle(fontWeight: FontWeight.bold)), const SizedBox(width: 16),
-                          Expanded(child: TextFormField(controller: _target8Controller, decoration: const InputDecoration(labelText: '対象計 (税込)'), keyboardType: TextInputType.number)),
-                        ]),
+                        // 【修正】8%対象金額: ラベル変更 & 入力ボックス幅を半分程度に
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            const Text(' 8%対象金額', style: TextStyle(fontWeight: FontWeight.bold)),
+                            const SizedBox(width: 16),
+                            SizedBox(
+                              width: MediaQuery.of(context).size.width * 0.5, // 画面幅の半分
+                              child: TextFormField(
+                                  controller: _target8Controller,
+                                  decoration: const InputDecoration(labelText: '対象計 (税込)'),
+                                  keyboardType: TextInputType.number
+                              ),
+                            ),
+                          ],
+                        ),
+
+                        // 【追加】メモ欄 (8%の下、インボイスの上)
+                        const SizedBox(height: 12),
+                        TextFormField(
+                          controller: _memoController,
+                          decoration: const InputDecoration(labelText: 'メモ'),
+                        ),
 
                         const SizedBox(height: 12),
                         TextFormField(controller: _invoiceController, decoration: const InputDecoration(labelText: 'インボイス登録番号')),

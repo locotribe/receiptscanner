@@ -1,4 +1,3 @@
-// lib/models/receipt_data.dart
 import 'package:intl/intl.dart';
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 
@@ -21,6 +20,9 @@ class ReceiptData {
   // 摘要（科目）
   String? description;
 
+  // 【追加】メモ（自由記述）
+  String? memo;
+
   // 0: 未アップロード/変更あり, 1: アップロード済み
   int isUploaded;
   // Googleドライブ上のファイルID (上書きや重複チェック用)
@@ -29,9 +31,9 @@ class ReceiptData {
   // PDF生成用にOCRの生データを一時保持する (DBには保存しない)
   RecognizedText? ocrData;
 
-  // 【追加】複数枚撮影時のソース画像パスリスト (一時保持用)
+  // 複数枚撮影時のソース画像パスリスト (一時保持用)
   List<String>? sourceImagePaths;
-  // 【追加】複数枚撮影時のOCRデータリスト (PDF生成用・一時保持用)
+  // 複数枚撮影時のOCRデータリスト (PDF生成用・一時保持用)
   List<RecognizedText>? sourceOcrData;
 
   ReceiptData({
@@ -48,7 +50,8 @@ class ReceiptData {
     this.rawText = '',
     this.imagePath,
     this.description,
-    this.isUploaded = 0, // デフォルトは「未」
+    this.memo, // 【追加】
+    this.isUploaded = 0,
     this.driveFileId,
     this.ocrData,
     this.sourceImagePaths,
@@ -86,6 +89,7 @@ class ReceiptData {
       'raw_text': rawText,
       'image_path': imagePath,
       'description': description,
+      'memo': memo, // 【追加】
       'is_uploaded': isUploaded,
       'drive_file_id': driveFileId,
     };
@@ -107,14 +111,13 @@ class ReceiptData {
       rawText: map['raw_text'] ?? '',
       imagePath: map['image_path'],
       description: map['description'],
+      memo: map['memo'], // 【追加】
       isUploaded: map['is_uploaded'] ?? 0,
       driveFileId: map['drive_file_id'],
     );
   }
 
-  // --- 【ここがエラー原因でした】Googleドライブ同期用メソッド ---
-
-  // JSON変換 (同期用)
+  // Googleドライブ同期用 JSON変換
   Map<String, dynamic> toJson() {
     return {
       'id': id,
@@ -127,18 +130,13 @@ class ReceiptData {
       'taxAmount8': taxAmount8,
       'invoiceNumber': invoiceNumber,
       'tel': tel,
-      'memo': description, // descriptionをmemoとして同期するか、descriptionとして同期するか
-      // ここでは既存仕様の 'memo' フィールドに合わせて同期させますが、
-      // 本来なら 'description' キーを使うべきです。
-      // もし他端末ですでに 'memo' として扱っているならそのままで、
-      // 今回新規追加なら 'description' キーを追加します。
       'description': description,
+      'memo': memo, // 【修正】明確にmemoフィールドとして保存
       'driveFileId': driveFileId,
-      // imagePath, ocrData は同期しない
     };
   }
 
-  // JSON復元 (同期用)
+  // JSON復元
   factory ReceiptData.fromJson(Map<String, dynamic> json) {
     return ReceiptData(
       id: json['id'],
@@ -151,7 +149,8 @@ class ReceiptData {
       taxAmount8: json['taxAmount8'],
       invoiceNumber: json['invoiceNumber'],
       tel: json['tel'],
-      description: json['description'] ?? json['memo'], // 互換性のためmemoも見る
+      description: json['description'],
+      memo: json['memo'], // 【追加】
       imagePath: null,
       isUploaded: (json['driveFileId'] != null) ? 1 : 0,
       driveFileId: json['driveFileId'],
