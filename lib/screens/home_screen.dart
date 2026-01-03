@@ -93,9 +93,6 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> with TickerProvid
     setState(() {
       final selectedMonth = _months[_tabController.index];
       _currentDisplayDate = DateTime(_currentDisplayDate.year, selectedMonth);
-      // 【修正】月を変更しても選択モードを解除しないように削除
-      // _isSelectionMode = false;
-      // _selectedItemIds.clear();
     });
   }
 
@@ -104,7 +101,7 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> with TickerProvid
       options: DocumentScannerOptions(
         documentFormat: DocumentFormat.jpeg,
         mode: ScannerMode.full,
-        pageLimit: 1,
+        pageLimit: 1, // ここは挙動確認後に必要であればlimit解除を検討しますが、一旦現状維持
         isGalleryImport: true,
       ),
     );
@@ -135,9 +132,6 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> with TickerProvid
   void _onYearChanged(int year) {
     setState(() {
       _currentDisplayDate = DateTime(year, _currentDisplayDate.month);
-      // 【修正】年を変更しても選択モードを解除しないように削除
-      // _isSelectionMode = false;
-      // _selectedItemIds.clear();
     });
   }
 
@@ -192,13 +186,26 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> with TickerProvid
   }
 
   // --- OCR / スキャン処理 ---
-  Future<void> _performOcr(String imagePath) async {
+  Future<void> _performOcr(List<String> imagePaths) async {
     setState(() => _isProcessing = true);
     try {
-      final inputImage = InputImage.fromFilePath(imagePath);
-      final recognizedText = await _textRecognizer.processImage(inputImage);
-      final receiptData = _parser.parse(recognizedText);
-      receiptData.imagePath = imagePath;
+      final List<RecognizedText> recognizedTexts = [];
+      for (final path in imagePaths) {
+        final inputImage = InputImage.fromFilePath(path);
+        final recognizedText = await _textRecognizer.processImage(inputImage);
+        recognizedTexts.add(recognizedText);
+      }
+
+      // 【修正】Step 3: パーサーにリスト全体を渡して解析・順序判定を行う
+      // Step 2で更新したReceiptParserのparseメソッドを呼び出す
+      final receiptData = _parser.parse(recognizedTexts, imagePaths);
+
+      // パーサーによってソートされた画像リストの先頭を、一覧表示用のサムネイル画像として設定
+      if (receiptData.sourceImagePaths != null && receiptData.sourceImagePaths!.isNotEmpty) {
+        receiptData.imagePath = receiptData.sourceImagePaths!.first;
+      } else if (imagePaths.isNotEmpty) {
+        receiptData.imagePath = imagePaths.first;
+      }
 
       if (receiptData.tel != null && receiptData.tel!.isNotEmpty) {
         final knownStoreName = await DatabaseHelper.instance.getStoreNameByTel(receiptData.tel!);
@@ -281,7 +288,7 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> with TickerProvid
     try {
       if (_documentScanner == null) return;
       final result = await _documentScanner!.scanDocument();
-      if (result.images.isNotEmpty) await _performOcr(result.images.first);
+      if (result.images.isNotEmpty) await _performOcr(result.images);
     } catch (e) { print('Scan error: $e'); }
   }
 
@@ -327,26 +334,19 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> with TickerProvid
     setState(() { if (_selectedItemIds.contains(id)) { _selectedItemIds.remove(id); if (_selectedItemIds.isEmpty) _isSelectionMode = false; } else { _selectedItemIds.add(id); } });
   }
 
-  // 【修正】全選択ロジックの変更
-  // 月をまたいで選択している場合でも、現在表示中の月のアイテムだけを追加または解除するように変更
   void _selectAllItems() {
     final currentMonthItems = _allReceipts.where((r) => r.date != null && r.date!.year == _currentDisplayDate.year && r.date!.month == _currentDisplayDate.month).toList();
-
-    // 現在の月のアイテムがすべて選択済みかどうかを判定
     bool isAllCurrentSelected = currentMonthItems.every((item) => _selectedItemIds.contains(item.id));
 
     setState(() {
       if (isAllCurrentSelected) {
-        // 今月のアイテムだけを選択解除
         for (var item in currentMonthItems) {
           _selectedItemIds.remove(item.id);
         }
-        // 全ての選択がなくなったらモード終了
         if (_selectedItemIds.isEmpty) {
           _isSelectionMode = false;
         }
       } else {
-        // 今月のアイテムを全て選択（他の月の選択は維持）
         for (var item in currentMonthItems) {
           _selectedItemIds.add(item.id);
         }
@@ -363,7 +363,6 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> with TickerProvid
       appBar: AppBar(
         backgroundColor: _isSelectionMode ? Colors.grey[800] : colorScheme.inversePrimary,
         foregroundColor: _isSelectionMode ? Colors.white : Colors.black,
-        // ここで件数を表示している（変更なしで機能します）
         title: _isSelectionMode
             ? Text('${_selectedItemIds.length}件 選択中')
             : Column(crossAxisAlignment: CrossAxisAlignment.start, children: [const Text('レシート帳'), if (_getFilterLabel() != null) Text(_getFilterLabel()!, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.normal), maxLines: 1, overflow: TextOverflow.ellipsis)]),
@@ -437,7 +436,6 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> with TickerProvid
             itemCount: monthlyItems.length,
             itemBuilder: (context, index) {
               final item = monthlyItems[index];
-              // IDが含まれているかチェックするだけなので、月をまたいでも正しく機能します
               final isSelected = _selectedItemIds.contains(item.id);
 
               return ReceiptListItem(

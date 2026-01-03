@@ -21,14 +21,13 @@ class EditReceiptScreen extends StatefulWidget {
 
 class _EditReceiptScreenState extends State<EditReceiptScreen> {
   final _formKey = GlobalKey<FormState>();
-  // 【修正】税額用コントローラー(_tax10Controller, _tax8Controller)を削除
   late TextEditingController _storeController, _amountController, _target10Controller, _target8Controller, _telController, _dateController, _timeController, _invoiceController, _descriptionController;
   final _pdfGenerator = PdfGenerator();
-  Uint8List? _pdfImageBytes;
 
-  // 【追加】保存中かどうかを管理するフラグ
+  List<ImageProvider> _pageImages = [];
+  int _currentImageIndex = 0;
+
   bool _isSaving = false;
-
   final _transformationController = TransformationController();
 
   @override
@@ -38,7 +37,6 @@ class _EditReceiptScreenState extends State<EditReceiptScreen> {
     _storeController = TextEditingController(text: d.storeName);
     _amountController = TextEditingController(text: d.amount?.toString() ?? '');
     _target10Controller = TextEditingController(text: d.targetAmount10?.toString() ?? '');
-    // 税額は表示しないためコントローラー初期化不要
     _target8Controller = TextEditingController(text: d.targetAmount8?.toString() ?? '');
 
     _telController = TextEditingController(text: _formatInitialTel(d.tel));
@@ -48,30 +46,49 @@ class _EditReceiptScreenState extends State<EditReceiptScreen> {
     _descriptionController = TextEditingController(text: d.description);
 
     _amountController.addListener(_onAmountChanged);
-    // 税額計算用のリスナーは不要になったため削除
 
-    _loadPdfImageIfNeeded();
+    _loadImages();
   }
 
-  Future<void> _loadPdfImageIfNeeded() async {
-    final path = widget.initialData.imagePath;
-    if (path != null && path.toLowerCase().endsWith('.pdf')) {
+  // 画像のロード処理
+  Future<void> _loadImages() async {
+    final d = widget.initialData;
+
+    // 1. 新規撮影で複数枚のパスがある場合
+    if (d.sourceImagePaths != null && d.sourceImagePaths!.isNotEmpty) {
+      setState(() {
+        _pageImages = d.sourceImagePaths!.map((path) => FileImage(File(path))).toList();
+      });
+    }
+    // 2. 既存のPDFファイルの場合 (編集モード)
+    else if (d.imagePath != null && d.imagePath!.toLowerCase().endsWith('.pdf')) {
       try {
-        final file = File(path);
+        final file = File(d.imagePath!);
         if (await file.exists()) {
           final bytes = await file.readAsBytes();
-          await for (final page in Printing.raster(bytes, pages: [0])) {
-            final image = await page.toPng();
+
+          // 【修正】scale パラメータエラーへの対応
+          // scale: 2.0 の代わりに dpi: 144.0 (72 * 2) を指定して高解像度化
+          await for (final page in Printing.raster(bytes, dpi: 144.0)) {
+            final pngBytes = await page.toPng();
             if (mounted) {
               setState(() {
-                _pdfImageBytes = image;
+                _pageImages.add(MemoryImage(pngBytes));
               });
             }
-            break;
           }
         }
       } catch (e) {
-        print('Error loading PDF preview: $e');
+        print('Error loading PDF images: $e');
+      }
+    }
+    // 3. 単一の画像ファイルの場合 (後方互換性)
+    else if (d.imagePath != null) {
+      final file = File(d.imagePath!);
+      if (await file.exists()) {
+        setState(() {
+          _pageImages = [FileImage(file)];
+        });
       }
     }
   }
@@ -96,7 +113,6 @@ class _EditReceiptScreenState extends State<EditReceiptScreen> {
   void _onAmountChanged() {
     if (_amountController.text.isEmpty) return;
     int? total = int.tryParse(_amountController.text.replaceAll(',', ''));
-    // 合計金額が入力され、8%対象が空の場合は、全額を10%対象(税込)としてセットする
     if (total != null && total > 0 && _target8Controller.text.isEmpty) {
       _target10Controller.text = total.toString();
     }
@@ -129,7 +145,6 @@ class _EditReceiptScreenState extends State<EditReceiptScreen> {
   }
 
   Future<void> _saveData() async {
-    // 保存中は連打できないようにする
     if (_isSaving) return;
 
     if (_formKey.currentState!.validate()) {
@@ -137,11 +152,9 @@ class _EditReceiptScreenState extends State<EditReceiptScreen> {
       final amountStr = _amountController.text.replaceAll(',', '');
       final amount = int.tryParse(amountStr);
 
-      // 対象額(税込)を取得
       final target10 = int.tryParse(_target10Controller.text.replaceAll(',', ''));
       final target8 = int.tryParse(_target8Controller.text.replaceAll(',', ''));
 
-      // 【修正】税額は入力値(税込対象額)から自動計算する
       int? tax10;
       if (target10 != null) {
         tax10 = (target10 * 10 / 110).floor();
@@ -195,12 +208,10 @@ class _EditReceiptScreenState extends State<EditReceiptScreen> {
         }
       }
 
-      // 【追加】ここから重い処理が始まるのでローディング表示を開始
       setState(() {
         _isSaving = true;
       });
 
-      // try-finally ブロックでエラー時も確実にローディングを解除できるようにする（画面遷移しない場合）
       try {
         final dateStr = date.replaceAll('-', '');
         final safeStoreName = storeName.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
@@ -215,23 +226,28 @@ class _EditReceiptScreenState extends State<EditReceiptScreen> {
         final savePath = '${saveDir.path}/$fileName';
 
         try {
-          if (widget.initialData.imagePath != null && widget.initialData.ocrData != null) {
+          if (widget.initialData.sourceImagePaths != null && widget.initialData.sourceOcrData != null) {
             final pdfBytes = await _pdfGenerator.generateSearchablePdf(
-                widget.initialData.imagePath!,
-                widget.initialData.ocrData!
+                widget.initialData.sourceImagePaths!,
+                widget.initialData.sourceOcrData!
             );
             final file = File(savePath);
             await file.writeAsBytes(pdfBytes);
-            print('PDF Saved: $savePath');
-          } else {
-            // OCRデータなしの場合の処理
+            print('PDF Saved (Multi-page): $savePath');
+          }
+          else if (widget.initialData.imagePath != null && widget.initialData.ocrData != null) {
+            final pdfBytes = await _pdfGenerator.generateSearchablePdf(
+                [widget.initialData.imagePath!],
+                [widget.initialData.ocrData!]
+            );
+            final file = File(savePath);
+            await file.writeAsBytes(pdfBytes);
+            print('PDF Saved (Single-page): $savePath');
           }
         } catch (e) {
           print('PDF生成エラー: $e');
           if (!mounted) return;
           ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('PDF生成に失敗しました')));
-
-          // エラーの場合はローディングを解除してリターン
           setState(() {
             _isSaving = false;
           });
@@ -242,7 +258,7 @@ class _EditReceiptScreenState extends State<EditReceiptScreen> {
         if (id.isEmpty) { id = '${storeName}_${date.replaceAll('-', '')}${time.replaceAll(':', '')}$amount'; }
 
         String finalImagePath = widget.initialData.imagePath ?? '';
-        if (widget.initialData.ocrData != null) {
+        if (widget.initialData.ocrData != null || widget.initialData.sourceOcrData != null) {
           finalImagePath = savePath;
         }
 
@@ -254,8 +270,6 @@ class _EditReceiptScreenState extends State<EditReceiptScreen> {
           description: description,
         );
 
-        // --- 学習機能の呼び出し ---
-        // ユーザーが入力した摘要と、OCRの生テキストを学習させる
         await DatabaseHelper.instance.updateCategoryLearning(
           widget.initialData.rawText,
           description,
@@ -266,7 +280,6 @@ class _EditReceiptScreenState extends State<EditReceiptScreen> {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('保存しました')));
         Navigator.pop(context, true);
       } catch (e) {
-        // 万が一その他のエラーが発生した場合
         print('保存エラー: $e');
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('保存に失敗しました: $e')));
@@ -283,16 +296,17 @@ class _EditReceiptScreenState extends State<EditReceiptScreen> {
     final colorScheme = Theme.of(context).colorScheme;
 
     Widget backgroundContent;
-    if (widget.initialData.imagePath != null && widget.initialData.imagePath!.toLowerCase().endsWith('.pdf')) {
-      if (_pdfImageBytes != null) {
-        backgroundContent = Image.memory(_pdfImageBytes!, fit: BoxFit.contain);
-      } else {
-        backgroundContent = const Center(child: CircularProgressIndicator());
+    if (_pageImages.isNotEmpty) {
+      if (_currentImageIndex >= _pageImages.length) {
+        _currentImageIndex = 0;
       }
-    } else if (widget.initialData.imagePath != null) {
-      backgroundContent = Image.file(File(widget.initialData.imagePath!), fit: BoxFit.contain);
+      backgroundContent = Image(
+        image: _pageImages[_currentImageIndex],
+        fit: BoxFit.contain,
+        key: ValueKey(_currentImageIndex),
+      );
     } else {
-      backgroundContent = const Center(child: Icon(Icons.receipt, size: 100, color: Colors.grey));
+      backgroundContent = const Center(child: CircularProgressIndicator());
     }
 
     return Scaffold(
@@ -303,7 +317,6 @@ class _EditReceiptScreenState extends State<EditReceiptScreen> {
         foregroundColor: Colors.white,
         actions: [
           if (!widget.isEditing) IconButton(onPressed: _isSaving ? null : () => Navigator.pop(context, 'rescan'), icon: const Icon(Icons.camera_alt)),
-          // 保存中はボタンを無効化（見た目上は押せそうでも、_saveData冒頭でガード済み）
           IconButton(onPressed: _saveData, icon: const Icon(Icons.save)),
         ],
       ),
@@ -314,6 +327,18 @@ class _EditReceiptScreenState extends State<EditReceiptScreen> {
             child: GestureDetector(
               onTap: () {
                 _transformationController.value = Matrix4.identity();
+              },
+              onHorizontalDragEnd: (details) {
+                if (_pageImages.length <= 1) return;
+                if (details.primaryVelocity! < 0) {
+                  setState(() {
+                    _currentImageIndex = (_currentImageIndex + 1) % _pageImages.length;
+                  });
+                } else if (details.primaryVelocity! > 0) {
+                  setState(() {
+                    _currentImageIndex = (_currentImageIndex - 1 + _pageImages.length) % _pageImages.length;
+                  });
+                }
               },
               child: InteractiveViewer(
                 transformationController: _transformationController,
@@ -360,6 +385,39 @@ class _EditReceiptScreenState extends State<EditReceiptScreen> {
                             ),
                           ),
                         ),
+
+                        if (_pageImages.isNotEmpty)
+                          Container(
+                            height: 80,
+                            margin: const EdgeInsets.only(bottom: 16),
+                            child: ListView.separated(
+                              scrollDirection: Axis.horizontal,
+                              itemCount: _pageImages.length,
+                              separatorBuilder: (_, __) => const SizedBox(width: 8),
+                              itemBuilder: (context, index) {
+                                final isSelected = index == _currentImageIndex;
+                                return GestureDetector(
+                                  onTap: () => setState(() => _currentImageIndex = index),
+                                  child: Container(
+                                    width: 60,
+                                    decoration: BoxDecoration(
+                                      border: isSelected ? Border.all(color: colorScheme.primary, width: 3) : Border.all(color: Colors.grey[300]!),
+                                      borderRadius: BorderRadius.circular(8),
+                                    ),
+                                    child: ClipRRect(
+                                      borderRadius: BorderRadius.circular(5),
+                                      child: Image(
+                                        image: _pageImages[index],
+                                        fit: BoxFit.cover,
+                                        errorBuilder: (c, o, s) => const Icon(Icons.broken_image),
+                                      ),
+                                    ),
+                                  ),
+                                );
+                              },
+                            ),
+                          ),
+
                         TextFormField(controller: _storeController, decoration: const InputDecoration(labelText: '店名')),
                         const SizedBox(height: 12),
                         TextFormField(controller: _descriptionController, decoration: const InputDecoration(labelText: '摘要 (科目：消耗品、食材など)')),
@@ -373,7 +431,6 @@ class _EditReceiptScreenState extends State<EditReceiptScreen> {
                         TextFormField(controller: _amountController, decoration: const InputDecoration(labelText: '合計金額 (税込)'), keyboardType: TextInputType.number),
                         const SizedBox(height: 8),
 
-                        // 【修正】税額入力欄を削除し、対象額のみを表示
                         Row(children: [
                           const Text('10%', style: TextStyle(fontWeight: FontWeight.bold)), const SizedBox(width: 16),
                           Expanded(child: TextFormField(controller: _target10Controller, decoration: const InputDecoration(labelText: '対象計 (税込)'), keyboardType: TextInputType.number)),
@@ -403,10 +460,9 @@ class _EditReceiptScreenState extends State<EditReceiptScreen> {
             },
           ),
 
-          // 【追加】保存中のローディングオーバーレイ
           if (_isSaving)
             Container(
-              color: Colors.black.withOpacity(0.6), // 少し濃いめの半透明
+              color: Colors.black.withOpacity(0.6),
               child: const Center(
                 child: Column(
                   mainAxisSize: MainAxisSize.min,

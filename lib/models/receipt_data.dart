@@ -1,3 +1,4 @@
+// lib/models/receipt_data.dart
 import 'package:intl/intl.dart';
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 
@@ -28,6 +29,11 @@ class ReceiptData {
   // PDF生成用にOCRの生データを一時保持する (DBには保存しない)
   RecognizedText? ocrData;
 
+  // 【追加】複数枚撮影時のソース画像パスリスト (一時保持用)
+  List<String>? sourceImagePaths;
+  // 【追加】複数枚撮影時のOCRデータリスト (PDF生成用・一時保持用)
+  List<RecognizedText>? sourceOcrData;
+
   ReceiptData({
     this.id = '',
     this.storeName = '',
@@ -45,6 +51,8 @@ class ReceiptData {
     this.isUploaded = 0, // デフォルトは「未」
     this.driveFileId,
     this.ocrData,
+    this.sourceImagePaths,
+    this.sourceOcrData,
   });
 
   String get dateString {

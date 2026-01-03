@@ -8,6 +8,7 @@ class ReceiptParser {
   final _uuid = const Uuid();
 
   /// 座標情報を使って、同じ高さにあるテキストを1行に結合する
+  /// (複数画像のマージ時のみ使用)
   List<String> _mergeLinesByCoordinate(RecognizedText recognizedText) {
     print('[DEBUG] --- 行結合処理開始 ---');
     List<TextLine> allLines = [];
@@ -51,55 +52,71 @@ class ReceiptParser {
       row.sort((a, b) => a.boundingBox.left.compareTo(b.boundingBox.left));
       String mergedText = row.map((e) => e.text).join(' ');
       mergedLines.add(mergedText);
-      print('[DEBUG] Row: $mergedText');
+      // print('[DEBUG] Row: $mergedText');
     }
     print('[DEBUG] --- 行結合処理終了 (${mergedLines.length}行) ---');
 
     return mergedLines;
   }
 
+  /// 2枚の画像のOCR結果から、重なり（オーバーラップ）を検出してスコアを算出する
+  int _calculateOverlapScore(RecognizedText textA, RecognizedText textB) {
+    final linesA = _mergeLinesByCoordinate(textA);
+    final linesB = _mergeLinesByCoordinate(textB);
+    if (linesA.isEmpty || linesB.isEmpty) return 0;
+
+    final int checkCountA = (linesA.length * 0.3).ceil().clamp(3, 15);
+    final int checkCountB = (linesB.length * 0.3).ceil().clamp(3, 15);
+
+    final subA = linesA.sublist(max(0, linesA.length - checkCountA));
+    final subB = linesB.sublist(0, min(linesB.length, checkCountB));
+
+    int score = 0;
+    for (var strA in subA) {
+      if (strA.length < 3) continue;
+      for (var strB in subB) {
+        if (strB.length < 3) continue;
+        if (strA == strB || strA.contains(strB) || strB.contains(strA)) {
+          score += 10;
+        } else {
+          if (_areSimilar(strA, strB)) {
+            score += 5;
+          }
+        }
+      }
+    }
+    return score;
+  }
+
+  bool _areSimilar(String a, String b) {
+    if ((a.length - b.length).abs() > 3) return false;
+    int matchCount = 0;
+    int len = min(a.length, b.length);
+    for (int i = 0; i < len; i++) {
+      if (a[i] == b[i]) matchCount++;
+    }
+    return (matchCount / len) > 0.7;
+  }
+
   /// 金額解析用の文字クリーニング
   String _normalizeAmountText(String text) {
     String s = text;
-    // 全角数字を半角に
     s = s.replaceAllMapped(RegExp(r'[０-９]'), (m) => (m.group(0)!.codeUnitAt(0) - 0xFEE0).toString());
-
-    // カンマの後のスペースを除去 ("6, 440" -> "6,440")
     s = s.replaceAll(RegExp(r',\s+'), ',');
-
-    // カンマ、円マークの揺れを修正
     s = s.replaceAll(RegExp(r'[Yy]\s*(?=[0-9])'), '¥');
-
-    // Wも円マークの誤認識として処理 (例: W76 -> ¥76)
     s = s.replaceAll(RegExp(r'[Ww]\s*(?=[0-9])'), '¥');
-
-    // 4と¥の誤認修正: 数字の前にある4を¥に (例: 46,440 -> ¥6,440)
-    // 条件: 前に数字がなく、後ろに「数字1-3桁＋カンマ」または「数字3桁」が続く場合
     s = s.replaceAll(RegExp(r'(?<![0-9])4(?=[0-9]{1,3}(,|¥d{3}))'), '¥');
-
-    // 紛らわしい記号を削除または置換
     s = s.replaceAll(RegExp(r'[\$\*＊]'), '');
     s = s.replaceAll('l', '1');
     s = s.replaceAll('O', '0');
-
-    // 数字の間のスペースを除去 ("4 050" -> "4050")
-    s = s.replaceAllMapped(RegExp(r'(\d)\s+([0-9])'), (Match m) {
-      return '${m.group(1)}${m.group(2)}';
-    });
-
-    // 単位（点、個）がついている数字を事前にマスクする
-    // "合計1点" の "1" を拾わないようにするため
+    s = s.replaceAllMapped(RegExp(r'(\d)\s+([0-9])'), (Match m) => '${m.group(1)}${m.group(2)}');
     s = s.replaceAll(RegExp(r'\d+\s*[点個]'), '');
-
     return s;
   }
 
   /// 文字列から数値を抽出するヘルパー
-  /// 「ゴーストナンバー処理」を含む
-  /// OCRが「¥」を「4」と誤認して「41026」となった場合、「1026」も候補として生成する
   List<int> _extractValues(String text) {
     List<int> values = [];
-    // 単純に [数字とカンマの塊] をすべて抽出する
     final matches = RegExp(r'[0-9,]+').allMatches(text);
 
     for (var m in matches) {
@@ -109,15 +126,10 @@ class ReceiptParser {
       int? val = int.tryParse(valStr);
       if (val != null) {
         values.add(val);
-
-        // --- ゴーストナンバー処理 (4剥がし) ---
-        // 【重要】3桁以上で、先頭が '4' の場合 (例: 41026->1026, 476->76)
-        // 税額(76円)が476と誤認されるケースに対応するため、条件を4桁から3桁へ緩和
         if (valStr.length >= 3 && valStr.startsWith('4')) {
-          String strippedStr = valStr.substring(1); // 先頭の4を除去
+          String strippedStr = valStr.substring(1);
           int? strippedVal = int.tryParse(strippedStr);
           if (strippedVal != null && strippedVal > 0) {
-            // 剥がした結果も候補に追加
             values.add(strippedVal);
           }
         }
@@ -135,27 +147,21 @@ class ReceiptParser {
 
     for (var line in lines) {
       String norm = _normalizeAmountText(line);
-      bool hasKeyword = taxKeywords.any((k) => norm.contains(k));
+      // 【修正】キーワード判定時にスペースを除去して判定
+      String checkLine = norm.replaceAll(' ', '');
+      bool hasKeyword = taxKeywords.any((k) => checkLine.contains(k));
 
       if (hasKeyword) {
-        // 対象額の誤検出を防ぐ
         if (norm.contains('対象') || norm.contains('対縁')) {
-          print('[DEBUG] SKIP(対象額の可能性): "$line"');
           continue;
         }
 
-        // 「10%」や「8%」を数値として拾わないように事前に削除
         String textForExtraction = norm.replaceAll(RegExp(r'[0-9０-９]+[%％]'), '');
-
         List<int> vals = _extractValues(textForExtraction);
         for (var val in vals) {
           if (val > 0 && val < 50000) {
-            print('[DEBUG] 税額候補発見: $val (由来: "$line")');
             if (bestTax == null || (val < bestTax)) {
               bestTax = val;
-              print('[DEBUG] -> 暫定採用 (より小さい値を優先)');
-            } else {
-              print('[DEBUG] -> 棄却 (現在のベスト $bestTax より大きい)');
             }
           }
         }
@@ -178,15 +184,18 @@ class ReceiptParser {
     for (var line in lines) {
       String norm = _normalizeAmountText(line);
 
-      if (excludeKeywords.any((k) => line.contains(k))) {
-        print('[DEBUG] 除外ワード検知: "$line" -> スキップ');
+      // 【修正】キーワード判定の強化: スペースを除去してからチェック
+      String checkLine = line.replaceAll(' ', '');
+
+      if (excludeKeywords.any((k) => checkLine.contains(k))) {
         continue;
       }
 
-      bool isTotalLine = totalKeywords.any((k) => line.contains(k));
+      // 「合 計」のようにスペースが入っていてもヒットさせる
+      bool isTotalLine = totalKeywords.any((k) => checkLine.contains(k));
       bool hasYenMark = norm.contains('¥') || norm.contains('\\');
 
-      // 1. ¥マーク付き (ゴーストナンバー処理を含む)
+      // 1. ¥マーク付き
       final yenMatches = amountPattern.allMatches(norm);
       for (var m in yenMatches) {
         String rawNumPart = m.group(2)!;
@@ -195,11 +204,10 @@ class ReceiptParser {
         for (var val in extractedVals) {
           if (val == 0) continue;
           int score = 20;
-          if (isTotalLine) score += 50;
+          if (isTotalLine) score += 50; // ここが正しく加算されるようになる
           if (hasYenMark) score += 20;
 
           scores[val] = (scores[val] ?? 0) + score;
-          print('[DEBUG] 候補追加(¥付): $val (Score: $score, Line: "$line")');
         }
       }
 
@@ -210,8 +218,7 @@ class ReceiptParser {
           List<int> extractedVals = _extractValues(m.group(1)!);
           for (var val in extractedVals) {
             if (val == 0) continue;
-            scores[val] = (scores[val] ?? 0) + 30;
-            print('[DEBUG] 候補追加(Key行): $val (Score: ${scores[val]}, Line: "$line")');
+            scores[val] = (scores[val] ?? 0) + 30; // ここも正しく加算される
           }
         }
       }
@@ -228,24 +235,16 @@ class ReceiptParser {
       }
     }
 
-    // --- 整合性チェックとフィルタリング ---
     int? bestAmount;
     int maxScore = -1;
 
-    print('[DEBUG] --- 候補の整合性チェック開始 ---');
     scores.forEach((amount, score) {
       if (amount > 10000000) return;
-
-      print('[DEBUG] 検査対象: ¥$amount (Score: $score)');
 
       if (anchorTax != null && anchorTax > 0) {
         double estimatedTax = amount * 0.10;
         double estimatedTax8 = amount * 0.08;
-
-        // 【重要】通常レシートの許容誤差を 5% から 2% (+5円) に厳格化
         double tolerance = isDiesel ? (amount * 0.05 + 500) : (amount * 0.02 + 5);
-
-        // 内税計算での検証
         double estimatedInnerTax8 = amount * 8 / 108;
         double estimatedInnerTax10 = amount * 10 / 110;
 
@@ -253,46 +252,33 @@ class ReceiptParser {
 
         if ((estimatedTax - anchorTax).abs() < tolerance ||
             (estimatedTax8 - anchorTax).abs() < tolerance ||
-            (estimatedInnerTax8 - anchorTax).abs() < 5 || // 内税厳密チェック
+            (estimatedInnerTax8 - anchorTax).abs() < 5 ||
             (estimatedInnerTax10 - anchorTax).abs() < 5
         ) {
           isConsistent = true;
-          print('[DEBUG]  -> 税額計算OK: 実税=$anchorTax');
-        } else {
-          print('[DEBUG]  -> 税額計算NG: 実税=$anchorTax vs 予想(8%内)=$estimatedInnerTax8');
         }
 
         if (isDiesel) {
           if (amount > anchorTax * 5) {
             isConsistent = true;
-            print('[DEBUG]  -> 軽油特例OK: 金額が税額の5倍以上');
           } else {
             isConsistent = false;
-            print('[DEBUG]  -> 軽油特例NG: 金額が小さすぎる');
           }
         } else {
           if (estimatedTax > anchorTax * 3 && !isConsistent) {
             isConsistent = false;
-            print('[DEBUG]  -> 通常NG: 予想税額が実税額より大きすぎる');
           }
         }
 
-        if (!isConsistent) {
-          print('[DEBUG]  -> 最終判定: 不合格 (Skip)');
-          return;
-        }
-      } else {
-        print('[DEBUG]  -> アンカー税額なしのためチェックskip');
+        if (!isConsistent) return;
       }
 
       if (score > maxScore) {
         maxScore = score;
         bestAmount = amount;
-        print('[DEBUG]  -> 暫定ベスト更新: ¥$bestAmount (Score: $maxScore)');
       } else if (score == maxScore) {
         if (bestAmount != null && amount > bestAmount!) {
           bestAmount = amount;
-          print('[DEBUG]  -> 同点のため大きい方を採用: ¥$bestAmount');
         }
       }
     });
@@ -301,12 +287,90 @@ class ReceiptParser {
     return bestAmount;
   }
 
-  ReceiptData parse(RecognizedText recognizedText) {
-    print('[DEBUG] ========== 解析開始 (Debug Mode) ==========');
-    List<String> lines = _mergeLinesByCoordinate(recognizedText);
-    String fullText = lines.join('\n');
+  /// 【修正】リスト対応版 parse メソッド
+  ReceiptData parse(List<RecognizedText> recognizedTexts, List<String> imagePaths) {
+    print('[DEBUG] ========== 解析開始 (Images: ${recognizedTexts.length}) ==========');
+
+    List<RecognizedText> sortedOcrData = [];
+    List<String> sortedImagePaths = [];
+    List<String> allLines = [];
+
+    // 【分岐】画像が1枚の場合と複数枚の場合で処理を分ける
+    if (recognizedTexts.length == 1) {
+      print('[DEBUG] Single Image Mode: 結合処理をスキップします');
+      // 1枚の場合はそのまま使用 (ソートや結合ロジックを通さない)
+      sortedOcrData = recognizedTexts;
+      sortedImagePaths = imagePaths;
+
+      // シンプルに行リストを抽出 (Y座標ソートのみ行う)
+      List<TextLine> rawLines = [];
+      for (var block in recognizedTexts.first.blocks) {
+        rawLines.addAll(block.lines);
+      }
+      // Y座標順にソートして自然な読み順にする
+      rawLines.sort((a, b) => a.boundingBox.top.compareTo(b.boundingBox.top));
+
+      // 行結合(join)を行わず、そのままリスト化
+      allLines = rawLines.map((l) => l.text).toList();
+
+    } else {
+      // 2枚以上の場合 (既存の結合ロジック)
+      print('[DEBUG] Multi Image Mode: 結合・重複排除処理を実行します');
+
+      // 1. 画像の順序判定
+      if (recognizedTexts.length == 2) {
+        final textA = recognizedTexts[0];
+        final textB = recognizedTexts[1];
+        int scoreAB = _calculateOverlapScore(textA, textB);
+        int scoreBA = _calculateOverlapScore(textB, textA);
+
+        if (scoreBA > scoreAB && scoreBA > 10) {
+          sortedOcrData = [textB, textA];
+          sortedImagePaths = [imagePaths[1], imagePaths[0]];
+        } else {
+          sortedOcrData = [textA, textB];
+          sortedImagePaths = [imagePaths[0], imagePaths[1]];
+        }
+      } else {
+        sortedOcrData = List.from(recognizedTexts);
+        sortedImagePaths = List.from(imagePaths);
+      }
+
+      // 2. テキストのマージ (重複排除)
+      List<String> lastPageTailLines = [];
+
+      for (int i = 0; i < sortedOcrData.length; i++) {
+        List<String> currentLines = _mergeLinesByCoordinate(sortedOcrData[i]);
+
+        if (i == 0) {
+          allLines.addAll(currentLines);
+          int tailCount = (currentLines.length * 0.3).ceil();
+          if (tailCount > 0) {
+            lastPageTailLines = currentLines.sublist(max(0, currentLines.length - tailCount));
+          }
+        } else {
+          for (var line in currentLines) {
+            bool isDuplicate = false;
+            for (var tailLine in lastPageTailLines) {
+              if (_areSimilar(line, tailLine) || tailLine.contains(line) || line.contains(tailLine)) {
+                isDuplicate = true;
+                break;
+              }
+            }
+            if (!isDuplicate) {
+              allLines.add(line);
+            }
+          }
+          int tailCount = (currentLines.length * 0.3).ceil();
+          if (tailCount > 0) {
+            lastPageTailLines = currentLines.sublist(max(0, currentLines.length - tailCount));
+          }
+        }
+      }
+    }
+
+    String fullText = allLines.join('\n');
     bool isDiesel = fullText.contains('軽油');
-    print('[DEBUG] 軽油フラグ: $isDiesel');
 
     DateTime? date;
     int? amount;
@@ -314,79 +378,49 @@ class ReceiptParser {
     String? tel;
     String? invoiceNum;
 
-// --- 電話番号解析 (修正版: キーワード優先＆誤検知防止) ---
-// 検索対象のキーワード（優先度高）
     final telKeywords = RegExp(r'(TEL|Tel|tel|電話|連絡先|☎|☏|📞|📱)');
-    // 除外対象のキーワード（インボイスや会員番号の誤検知防止）
     final excludeKeywords = RegExp(r'(登録|Invoice|No\.|Member|会員|ポイント)');
-
-    // 候補抽出用の正規表現
     final looseTelRegex = RegExp(r'[(]?[0OQ][0-9OQ\-\s)]{8,}[0-9OQ]');
 
-    // ヘルパー関数: 文字列から電話番号候補を抽出して検証する
     String? extractPhone(String line) {
       final match = looseTelRegex.firstMatch(line);
       if (match == null) return null;
-
       String candidate = match.group(0)!;
-
-      // 1. 誤読文字の補正 (O, Q, o -> 0)
       String corrected = candidate.replaceAll(RegExp(r'[OQo]'), '0');
-
-      // 2. 検証用に数字のみを抽出する
       String digits = corrected.replaceAll(RegExp(r'[^0-9]'), '');
-
-      // 条件チェック:
-      // 1. 10桁(固定) or 11桁(携帯/IP)
-      // 2. 先頭は0
-      // 3. 先頭が"00"ではない (インボイス誤検知防止)
       if ((digits.length == 10 || digits.length == 11) &&
           digits.startsWith('0') &&
           !digits.startsWith('00')) {
-
-        // 【修正点】 ハイフンが含まれている場合は、ハイフン付きの文字列を採用する
-        // 数字とハイフン以外（スペースやカッコなど）を除去して返す
         if (corrected.contains('-')) {
           return corrected.replaceAll(RegExp(r'[^0-9\-]'), '');
         }
-
-        // ハイフンがない場合は数字だけを返す（後の画面で自動フォーマットされる）
         return digits;
       }
       return null;
     }
 
-    // 【Pass 1】 キーワード優先探索
-    for (var line in lines) {
+    for (var line in allLines) {
       if (line.contains(RegExp(r'20\d{2}'))) continue;
       if (!line.contains(telKeywords)) continue;
-
-      String? result = extractPhone(line); // digitsではなくresultを受け取る
+      String? result = extractPhone(line);
       if (result != null) {
         tel = result;
-        print('[DEBUG] 電話番号検出(キーワード優先): $tel (元行: "$line")');
         break;
       }
     }
-
-    // 【Pass 2】 全行探索（フォールバック）
     if (tel == null) {
-      for (var line in lines) {
+      for (var line in allLines) {
         if (line.contains(RegExp(r'20\d{2}'))) continue;
         if (line.contains(telKeywords)) continue;
         if (line.contains(excludeKeywords)) continue;
-
         String? result = extractPhone(line);
         if (result != null) {
           tel = result;
-          print('[DEBUG] 電話番号検出(フォールバック): $tel (元行: "$line")');
           break;
         }
       }
     }
 
-    // --- インボイス番号 (修正版: 揺れ吸収ロジック追加) ---
-    // 【修正】文字揺れ（B→8, S→5など）や「登録番号」キーワードからの推測に対応
     final Map<String, String> ocrCorrectionMap = {
       'O': '0', 'D': '0', 'Q': '0', 'o': '0',
       'I': '1', 'l': '1', '|': '1',
@@ -397,46 +431,30 @@ class ReceiptParser {
     };
     final invoiceKeywords = ['登録', '番号', 'No', 'Invoice', 'T1', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7', 'T8', 'T9'];
 
-    for (var line in lines) {
-      // キーワード判定: 行内にキーワードがあるか、または T+数字っぽいものがあるか
+    for (var line in allLines) {
       bool hasKeyword = invoiceKeywords.any((k) => line.contains(k));
-      // Tの後に数字(や誤読文字)が5桁以上続くか？ (緩い判定)
       bool looksLikeInvoice = RegExp(r'T[\s\-]?[0-9OQDBIZS]{5,}', caseSensitive: false).hasMatch(line);
-
       if (!hasKeyword && !looksLikeInvoice) continue;
-
-      // 正規化: 全角英数を半角に変換（簡易正規化）
       String norm = line.replaceAllMapped(RegExp(r'[０-９Ａ-Ｚａ-ｚ]'), (m) => String.fromCharCode(m.group(0)!.codeUnitAt(0) - 0xFEE0));
-
-      // 抽出用正規表現: (T)? + (スペース|ハイフン)* + (数字|誤読文字){13}
-      // Tはあってもなくても良いが、数字部分は13桁
       final candidateRegex = RegExp(r'(T)?[\s\-]*([0-9OQDBIZSGl]{13})', caseSensitive: false);
       final match = candidateRegex.firstMatch(norm);
-
       if (match != null) {
         String rawNumberPart = match.group(2)!;
-
-        // マップを使って数字に復元
         String fixedNumber = rawNumberPart.split('').map((char) {
           return ocrCorrectionMap[char.toUpperCase()] ?? char;
         }).join('');
-
-        // 最終確認: 数字13桁か
         if (RegExp(r'^\d{13}$').hasMatch(fixedNumber)) {
           invoiceNum = 'T$fixedNumber';
-          // ログフォーマットは既存に合わせる
-          print('[DEBUG] インボイス検出(補正済): $invoiceNum (元: "${match.group(0)}")');
           break;
         }
       }
     }
 
-    // --- 日付解析 (日本語表記対応済) ---
     final dateRegex = RegExp(r'(20\d{2})[年/-]\s*(\d{1,2})[月/-]\s*(\d{1,2})日?');
     final timeRegex = RegExp(r'(\d{1,2}):(\d{2})');
     final timeKanjiRegex = RegExp(r'(\d{1,2})時(\d{1,2})分');
 
-    for (var line in lines) {
+    for (var line in allLines) {
       final match = dateRegex.firstMatch(line);
       if (match != null) {
         try {
@@ -445,69 +463,51 @@ class ReceiptParser {
           int d = int.parse(match.group(3)!);
           int hour = 0;
           int minute = 0;
-
           var timeMatch = timeRegex.firstMatch(line);
           if (timeMatch == null) {
             timeMatch = timeKanjiRegex.firstMatch(line);
           }
-
           if (timeMatch != null) {
             hour = int.parse(timeMatch.group(1)!);
             minute = int.parse(timeMatch.group(2)!);
           }
           date = DateTime(y, m, d, hour, minute);
-          print('[DEBUG] 日付・時刻検出: $date');
           break;
         } catch (_) {}
       }
     }
 
-    // --- 金額解析 ---
-    int? anchorTax = _findAnchorTax(lines);
-    amount = _determineTotalAmount(lines, anchorTax, isDiesel);
+    int? anchorTax = _findAnchorTax(allLines);
+    amount = _determineTotalAmount(allLines, anchorTax, isDiesel);
 
-    // --- 税率別対象額の解析 ---
     int? target8;
     int? target10;
     int? tax8;
     int? tax10;
 
-    print('[DEBUG] --- 内訳解析開始 ---');
-
     if (isDiesel) {
-      print('[DEBUG] 軽油特例ルートで内訳を探索します');
       final dieselTargetPattern = RegExp(r'(10%|１０％).*?(対.|計|税抜|外税).*?([0-9,]+)');
-
-      for (var line in lines) {
+      for (var line in allLines) {
         String norm = _normalizeAmountText(line);
         final match = dieselTargetPattern.firstMatch(norm);
         if (match != null) {
-          print('[DEBUG] 軽油対象額候補行: "$line" -> Norm: "$norm"');
           List<int> vals = _extractValues(match.group(0)!);
           vals.removeWhere((v) => v == 10 || v == 8);
-          print('[DEBUG]  -> 抽出数値: $vals');
-
           if (vals.isNotEmpty) {
             vals.sort();
             int candidate = vals.last;
-            if (amount != null && candidate > amount) {
-              print('[DEBUG]  -> 棄却: 合計金額($amount)より大きい');
-              continue;
-            }
+            if (amount != null && candidate > amount) continue;
             target10 = candidate;
-            print('[DEBUG]  -> 10%対象額として採用: $target10');
             break;
           }
         }
       }
-
       if (target10 != null) {
         final dieselTaxPattern = RegExp(r'(10%|１０％).*?(税|Tax).*?([¥\\])?.*?([0-9,]+)');
-        for (var line in lines) {
+        for (var line in allLines) {
           String norm = _normalizeAmountText(line);
           if (!norm.contains('10%') && !norm.contains('１０％')) continue;
           if (norm.contains('対象') || norm.contains('対縁')) continue;
-
           final match = dieselTaxPattern.firstMatch(norm);
           if (match != null) {
             List<int> vals = _extractValues(norm);
@@ -526,50 +526,37 @@ class ReceiptParser {
         target8 = 0;
         tax8 = 0;
       }
-
     } else {
-      print('[DEBUG] 通常ルートで内訳を探索します');
       List<int> candidates8 = [];
       List<int> candidates10 = [];
-
       final pattern8 = RegExp(r'(8%|８％|軽減|軽|8え|8X|8x).*?(対象|計|税抜|外税|課税).*?([0-9,]+)');
       final pattern10 = RegExp(r'(10%|１０％|標準).*?(対象|計|税抜|外税|課税).*?([0-9,]+)');
       final pattern8_B = RegExp(r'(内課税|課税).*?(8%|8え|8X|8x).*?([0-9,]+)');
 
-      for (var line in lines) {
+      for (var line in allLines) {
         String norm = _normalizeAmountText(line);
-
-        bool matched8 = false;
         if (pattern8.hasMatch(norm)) {
           var vals = _extractValues(norm);
           vals.removeWhere((v) => v == 8 || v == 10);
           candidates8.addAll(vals);
-          matched8 = true;
-          print('[DEBUG] 8%候補発見(A): $vals (Line: "$line")');
         }
-        if (!matched8 && pattern8_B.hasMatch(norm)) {
+        if (pattern8_B.hasMatch(norm)) {
           var vals = _extractValues(norm);
           vals.removeWhere((v) => v == 8 || v == 10);
           candidates8.addAll(vals);
-          print('[DEBUG] 8%候補発見(B): $vals (Line: "$line")');
         }
-
         if (pattern10.hasMatch(norm)) {
           var vals = _extractValues(norm);
           vals.removeWhere((v) => v == 10 || v == 8);
           candidates10.addAll(vals);
-          print('[DEBUG] 10%候補発見: $vals (Line: "$line")');
         }
       }
-
       if (amount != null) {
         bool resolved = false;
         if (!resolved && candidates8.contains(amount)) {
           target8 = amount; target10 = 0; resolved = true;
-          print('[DEBUG] 内訳一致(8%): 全額対象');
         } else if (!resolved && candidates10.contains(amount)) {
           target10 = amount; target8 = 0; resolved = true;
-          print('[DEBUG] 内訳一致(10%): 全額対象');
         }
         if (!resolved) {
           for (var val in candidates8) {
@@ -589,16 +576,13 @@ class ReceiptParser {
           target10 = amount; target8 = 0;
         }
       }
-
       if (target8 != null && target8 > 0) tax8 = (target8 * 8 / 108).floor();
       if (target10 != null && target10 > 0) tax10 = (target10 * 10 / 110).floor();
     }
 
-    // --- 店名解析 ---
-    for (int i = 0; i < lines.length && i < 5; i++) {
-      String l = lines[i].trim();
+    for (int i = 0; i < allLines.length && i < 5; i++) {
+      String l = allLines[i].trim();
       if (l.isEmpty) continue;
-      // 【修正済】telRegex -> looseTelRegex を使用
       if (l.contains('レシート') || l.contains('領収') || looseTelRegex.hasMatch(l) || dateRegex.hasMatch(l)) continue;
       if (RegExp(r'^[\d\s¥,.\-*]+$').hasMatch(l)) continue;
       storeName = l;
@@ -618,7 +602,9 @@ class ReceiptParser {
       targetAmount10: target10,
       taxAmount8: tax8,
       targetAmount8: target8,
-      ocrData: recognizedText,
+      ocrData: sortedOcrData.first,
+      sourceOcrData: sortedOcrData,
+      sourceImagePaths: sortedImagePaths,
       rawText: fullText,
     );
   }
